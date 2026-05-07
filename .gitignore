@@ -1,0 +1,67 @@
+# Real production data — NEVER commit
+# (workbooks contain CI's actual charcoal production records)
+*.xlsb
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.tsv
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Backups / exports / dumps
+backups/
+*.bak
+*.dump
+*.sql.gz
+exports/
+
+# Secrets / env
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+*.p12
+*.pfx
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+!.vscode/settings.json.example
+*.iml
+
+# Tauri / Rust build artifacts (for later)
+target/
+src-tauri/target/
+
+# Node / SvelteKit build (for later)
+node_modules/
+.svelte-kit/
+build/
+dist/
+.turbo/
+.parcel-cache/
+.vite/
+
+# Python (the migration script will use uv)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tooling
+.claude/
+*.log
