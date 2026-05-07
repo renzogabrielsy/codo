@@ -1,0 +1,58 @@
+[package]
+name = "codo"
+version = "0.0.1"
+description = "codo — local production-event log for CI charcoal manufacturing"
+authors = ["Renzo Sy"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "codo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri shell — pinned ≥ 2.6 per PROJECT_BRAIN.md §5 #10.
+tauri = { version = "2.6", features = [] }
+
+# libSQL — local embedded replica that auto-syncs to Turso cloud.
+# `replication` enables embedded-replica builders; `remote` enables direct-remote
+# connections used by the migration runner per PROJECT_BRAIN.md §5 #1.
+libsql = { version = "0.6", default-features = false, features = ["core", "remote", "replication"] }
+
+# OS keyring (macOS Keychain / Windows Credential Manager / Linux Secret Service).
+# Per PROJECT_BRAIN.md §3 we may use stronghold OR keyring; the keyring crate is
+# simpler (no master-password vault setup) and a perfect fit for a single-user app.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Async / serde / errors
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+
+# Date handling for ISO recv_date / prod_date.
+chrono = { version = "0.4", features = ["serde"] }
+
+# Turso Platform API HTTP calls (gotcha #12 onboarding).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Logging.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# NOTE: tauri-specta 2.0.0-rc.24 is the brain's intended type bridge.
+# Pinning it requires a specific specta companion version that drifts every
+# couple of weeks at the RC stage — punting until Step 3 (the first vertical
+# slice with real commands worth typing). For now, hand-written TS interfaces
+# live in src/lib/types/codo.ts (Plan B from PROJECT_BRAIN.md §3 / §5 #9).
+
+[features]
+default = []
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

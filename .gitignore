@@ -44,6 +44,9 @@ Thumbs.db
 # Tauri / Rust build artifacts (for later)
 target/
 src-tauri/target/
+# Tauri's auto-generated capability/permission schemas (regenerated from
+# capabilities/*.json on each build).
+src-tauri/gen/
 
 # Node / SvelteKit build (for later)
 node_modules/
