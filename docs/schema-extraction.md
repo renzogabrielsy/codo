@@ -48,14 +48,14 @@ Headers live in row 1. Rows 2–6 are a **legend** (sample valid values, not dat
 | 2 | `BATCH` | `batch` | TEXT | user-typed | NOVEMBER, DECEMBER, JANUARY, FEBRUARY, MARCH, APRIL, MAY | Calendar-month batch label. **Not always equal to `month-of(prod_date)`** — at month boundaries CI closes one batch and starts the next on the same physical day. Keep as TEXT, do not derive. |
 | 3 | `SHIFT` | `shift_id` | INTEGER FK | user-typed | M (711×), `M,` (1×, typo), ` M` (1×, typo). Legend lists M/E/N but only M observed. | Canonicalize trim+upper. Q: do E/N shifts run today at all? |
 | 4 | `GRADE` | `grade_id` | INTEGER FK | user-typed | `3X50` (624), `2X6` (112), `3.5` (33). Legend also lists `4X8`. | Note `3.5` is stored as numeric — type-coerce on read. |
-| 5 | `PLANT` | `plant_id` | INTEGER FK | user-typed | `W6` (371), `W7` (188), `DVO` (120), `W6 / W7` (87), plus typos `W6 /W7` (1), `W` (1), `37.0` (1) | Canonicalize space-noise. `DVO` here means "Davao plant" — appears on outflow rows from WHSE 3. |
+| 5 | `PLANT` | `plant_id` | INTEGER FK, **nullable** | user-typed | `W6` (371), `W7` (188), `DVO` (120), `W6 / W7` (87, legacy), plus typos `W6 /W7` (1), `W` (1), `37.0` (1) | Canonicalize space-noise. `DVO` means "Davao plant" — appears on WHSE 3 outflows. `W6 / W7` was a legacy attempt to track origin plant for already-bagged flec (Renzo: "not sustainable") — migration: NULL when the source is FLEC (origin lost once bagged), otherwise derive from `source_location.plant_id`. The `W` and `37.0` typos go to `drift_log`. |
 | 6 | `WHSE` | `warehouse_id` | INTEGER FK, **nullable** | user-typed (auto-fill on newer rows) | Real values: `WHSE 1` (5), `WHSE 2` (0), `WHSE 3` (120), `WHSE 5` (31), `WHSE 7` (179). Cosmetic noise: `W6` (302), `W7` (132). | The destination warehouse for the event. Cosmetic `W6`/`W7` values are pre-auto-fill noise from older rows — Renzo confirmed they should logically be NULL. **Migration NULLs them out.** |
 | 7 | `SRC` | `source_location_id` | INTEGER FK | user-typed | `FLEC` (165), `W7` (146), `TNK 1` (137), `DVO` (120), `TNK 2` (101), `TNK 3` (50), `W6` (27), `TNK 4` (16) | The truthful source-location field. Each value maps to a `source_location` row with a `kind`: `tank` (TNK 1..4), `plant_direct` (W6 direct, W7 tank), `warehouse_flec` (FLEC = from already-bagged stock), `dvo_container` (DVO). |
 | 8 | `WT` | `weight_kg` | REAL | user-typed | ~2,400–26,200 kg | Weight of this event. Always > 0. |
 | 9 | `CCC / FLEC` | `disposition_kind` + `partner_equipment_id` | TEXT enum + INTEGER FK | user-typed | `C1` (345), `FLEC` (238), `C2` (76), `RK4` (58), `RK3` (26), `RK2` (24), `RK1` (1), `FLEC ` (1, typo). Legend also lists `C3`, `C4`. | **The biggest column rewrite.** `FLEC` → `disposition_kind = 'flec_bagging'` (CI bagged into a warehouse), partner_equipment_id NULL. `Cn` → `disposition_kind = 'partner_crusher'` + FK to crusher N. `RKn` → `disposition_kind = 'partner_kiln'` + FK to kiln N. The `FLEC ` trailing-space variant is a canonicalization target. |
 | 10 | `FLEC AMT` | `flec_count` | INTEGER, nullable | user-typed | 12–38 typical | Number of flecon **bags** for this event. Populated when `disposition_kind = 'flec_bagging'` and on partner takebacks of bagged stock. The `RUN BAL` formulas track flec count, not kg. |
 | 11 | `WHSE SIDE` | `whse_side` *or* `dvo_batch_id` | TEXT or INTEGER FK | user-typed | `RS` (50), `LS` (39), `NOVEMBER2025RIGHT` (15), `SEPTEMBER2025LEFT` (4) | **Polymorphic column.** When the row is on WHSE 1/2/5/7, this is `LS` or `RS`. When the row is on WHSE 3, this carries a DVO batch code in `MONTH(start)YEARSIDE` format (e.g. `NOVEMBER2025RIGHT`); migration parses these into `dvo_batch_id` and sets `whse_side` to NULL. |
-| 12 | `FLEC STAT` | `flec_stat` | TEXT, nullable | user-typed | `DONE` (360). No other observed value. | Likely has `PENDING`/blank as the implicit non-DONE state. Q6 open. |
+| 12 | `FLEC STAT` | `flec_stat` | TEXT, nullable | user-typed | `DONE` (360). No other observed value. | **Legacy column.** Used to track whether Renzo had manually copied the row into the WHSE sheets. Now that WHSE sheets auto-fill, the column is dead. codo imports as nullable TEXT for historical fidelity but does NOT validate, transition, or write to it going forward. |
 | 13 | `DVO SIDE` | (not modeled in v1) | — | user-typed | (always blank) | Reserved column. Renzo confirmed: was supposed to carry the side info that ended up in `WHSE SIDE` instead. v1 doesn't model it. |
 | 14 | `UNIQUE TAG` | `unique_tag` | TEXT UNIQUE (computed) | formula | 764 distinct values across 765 populated rows; **1 confirmed-mistake duplicate** | A 10-segment hyphen-concatenation. See §3 for the field order. The duplicate (rows 844–845: `46113-46113-MARCH-M-3X50-W6-WHSE 7-RS-TNK 3-FLEC` × 2 with identical 1,604 kg / 3 bags) is a confirmed data entry error per Renzo. Migration imports one and logs the other to `drift_log`. |
 | 15 | (unnamed) | — | — | — | always blank | Spillover col. Ignore. |
@@ -294,10 +294,16 @@ CREATE TABLE shift (
 );
 
 CREATE TABLE grade (
-    id           INTEGER PRIMARY KEY,
-    code         TEXT NOT NULL UNIQUE,    -- '3X50' | '2X6' | '3.5' | '4X8'
-    display_name TEXT NOT NULL,
-    sort_order   INTEGER NOT NULL DEFAULT 0
+    id                       INTEGER PRIMARY KEY,
+    code                     TEXT NOT NULL UNIQUE,   -- '3X50' | '2X6' | '3.5' | '4X8'
+    display_name             TEXT NOT NULL,
+    sort_order               INTEGER NOT NULL DEFAULT 0,
+    -- Soft-warning bounds for kg-per-bag on flec_bagging events.
+    -- Renzo's estimates: 3X50 ~550 kg/bag, 2X6 ~500-510 kg/bag, "sometimes bigger bags hit 600s".
+    -- After Step 4 migration imports real rows, codo recomputes mean/stdev per grade and tightens these.
+    -- NULL means "no warning" (use for grades where we have no data yet, e.g. 3.5, 4X8).
+    expected_kg_per_bag_min  REAL,                   -- e.g. 400 for 3X50, 400 for 2X6
+    expected_kg_per_bag_max  REAL                    -- e.g. 700 for 3X50, 650 for 2X6
 );
 
 CREATE TABLE plant (
@@ -348,7 +354,7 @@ CREATE TABLE production_event (
 
     shift_id             INTEGER REFERENCES shift(id),        -- nullable
     grade_id             INTEGER NOT NULL REFERENCES grade(id),
-    plant_id             INTEGER NOT NULL REFERENCES plant(id),
+    plant_id             INTEGER REFERENCES plant(id),        -- nullable: NULL when source is FLEC (origin lost once bagged); see §7 rule 23
     warehouse_id         INTEGER REFERENCES warehouse(id),    -- nullable: NULL on tank-stage events
     source_location_id   INTEGER NOT NULL REFERENCES source_location(id),
 
@@ -603,30 +609,93 @@ Rules confirmed during the walkthrough are no longer tagged `INFERRED`.
 | 20 | Schema migrations apply to remote Turso DB first | n/a | migration runner connects to `TURSO_URL` directly |
 | 21 | External-source events go to `production_event_pending`, never auto-promoted | n/a (no current external source) | enforce when email-funnel agent ships; do NOT add the table now |
 | 22 | First-write timestamps (`created_at`, `updated_at`) set by application | n/a (workbook has no audit) | trigger or application code |
+| 23 | `SRC = TNK 1..4` ⇒ `PLANT = W6` | confirmed | application validation; CHECK at write time via canonicalize |
+| 24 | `SRC = W7` ⇒ `PLANT = W7` (W7 plant has only its own tank as a source) | confirmed | application validation |
+| 25 | `SRC = W6` ⇒ `PLANT = W6`. Note: W6 the plant has TWO output paths — into TNK 1–4, and as direct flec bags. `SRC = W6` captures **only the direct path**; tank-fed events use `SRC = TNK n`. | confirmed | application validation |
+| 26 | `SRC = DVO` ⇒ `PLANT = DVO` | confirmed | application validation |
+| 27 | `SRC = FLEC` ⇒ `PLANT` is informational only (origin plant unknown once flec is in inventory). Migration sets `plant_id = NULL` for these rows; new rows accept any plant or NULL. | confirmed (Renzo: "Its not sustainable so best to ignore that logic") | no constraint on plant_id when source.kind = 'warehouse_flec' |
+| 28 | Soft warning on `weight_kg / flec_count` when outside `[grade.expected_kg_per_bag_min, grade.expected_kg_per_bag_max]`. Initial bounds: 3X50 [400, 700], 2X6 [400, 650]. After Step 4 migration, codo computes actual mean ± 2σ per grade and tightens. | inferred from Renzo's "around 550 / 500-510 / sometimes 600s, not entirely accurate" | application warning at form entry; no DB constraint; warning shows the math (always-show-solution) |
+
+### 7.1 Validity matrix — `(disposition_kind, source.kind, warehouse)` combinations
+
+This matrix is the canonical reference for codo's row-level validation. Every combination produces either a `[VALID]` row example or a `[FORBIDDEN]` reason. The application-layer validator (Rust, called from every write site) enforces the FORBIDDEN cases. This table is also the basis for the test fixture set in Step 3.
+
+| disposition_kind | source.kind | warehouse | Status | Example or reason |
+|---|---|---|---|---|
+| `flec_bagging` | `tank` (TNK 1..4) | WHSE 1/2/5/7 | **[VALID]** | CI bagged 33 flec from TNK 2 into WHSE 7 RS. PLANT = W6 (derived from TNK source). |
+| `flec_bagging` | `tank` | WHSE 3 | **[FORBIDDEN]** | WHSE 3 is DVO-only; CI doesn't bag CI Cebu product into WHSE 3. |
+| `flec_bagging` | `tank` | NULL | **[FORBIDDEN]** | A bagging event must have a destination warehouse. |
+| `flec_bagging` | `plant_direct` (W6 / W7) | WHSE 1/2/5/7 | **[VALID]** | CI bagged 36 flec of 3.5 grade direct from W6 plant into WHSE 1 LS. |
+| `flec_bagging` | `plant_direct` | WHSE 3 | **[FORBIDDEN]** | WHSE 3 is DVO-only. |
+| `flec_bagging` | `plant_direct` | NULL | **[FORBIDDEN]** | A bagging event must have a destination warehouse. |
+| `flec_bagging` | `warehouse_flec` (FLEC) | any | **[FORBIDDEN]** | The product is already bagged; you can't bag bags. |
+| `flec_bagging` | `dvo_container` (DVO) | any | **[FORBIDDEN]** | DVO charcoal arrives in PP sacks, not flec bags; CI doesn't run flec_bagging events on DVO product. |
+| `partner_crusher` (or `partner_kiln`) | `tank` | NULL | **[VALID]** | Partner pulled 12,424 kg from TNK 3 into Crusher 1. Tank-stage event, no warehouse touched. |
+| `partner_crusher` / `partner_kiln` | `tank` | any warehouse | **[FORBIDDEN]** | Tank-stage partner takebacks don't touch a warehouse. |
+| `partner_crusher` / `partner_kiln` | `plant_direct` | NULL | **[VALID]** | Partner pulled direct from W6 plant into Crusher 2 (rare; non-3X50 bypass). |
+| `partner_crusher` / `partner_kiln` | `plant_direct` | any warehouse | **[FORBIDDEN]** | Plant-direct partner takebacks don't touch a warehouse. |
+| `partner_crusher` / `partner_kiln` | `warehouse_flec` | WHSE 1/2/5/7 | **[VALID]** | Partner pulled 38 flec out of WHSE 7 LS for Rotary Kiln 3. Outflow event for WHSE 7's flec ledger. PLANT informational. |
+| `partner_crusher` / `partner_kiln` | `warehouse_flec` | WHSE 3 | **[FORBIDDEN]** | WHSE 3 holds DVO product in PP sacks, not flec bags. (`warehouse_flec` source kind only applies to WHSE 1/2/5/7.) |
+| `partner_crusher` / `partner_kiln` | `warehouse_flec` | NULL | **[FORBIDDEN]** | A `warehouse_flec` source must identify which warehouse the flec was pulled from. |
+| `partner_crusher` / `partner_kiln` | `dvo_container` | WHSE 3 | **[VALID]** | Partner pulled 19,840 kg from WHSE 3 (NOVEMBER2025RIGHT batch) into Crusher 1. Outflow event for the DVO batch ledger. |
+| `partner_crusher` / `partner_kiln` | `dvo_container` | WHSE 1/2/5/7 | **[FORBIDDEN]** | DVO product is only stored in WHSE 3. |
+| `partner_crusher` / `partner_kiln` | `dvo_container` | NULL | **[FORBIDDEN]** | A `dvo_container` source must identify WHSE 3 as the warehouse. |
+
+### 7.2 SRC ↔ PLANT pairing (rules 23–27 expanded)
+
+For non-FLEC sources, `production_event.plant_id` is fully determined by `source_location.plant_id`. Migration enforces this; new writes derive on save.
+
+| `source.code` | `source.kind` | `source.plant_id` | Required `production_event.plant_id` |
+|---|---|---|---|
+| TNK 1, TNK 2, TNK 3, TNK 4 | tank | W6 | **W6** (forced) |
+| W7 | tank | W7 | **W7** (forced) |
+| W6 | plant_direct | W6 | **W6** (forced) |
+| DVO | dvo_container | DVO | **DVO** (forced) |
+| FLEC | warehouse_flec | NULL | **any (informational only, NULL allowed)** |
+
+For migration of legacy `PLANT = W6 / W7` rows:
+- If `SRC ∈ {W6, W7, TNK 1..4, DVO}`: derive plant_id from source. The workbook's PLANT value is overwritten silently.
+- If `SRC = FLEC`: set `plant_id = NULL`. The information was never reliable.
+- If `SRC` is blank (older rows missing data): leave `plant_id = NULL` and drop a `drift_log` entry kind=`legacy_missing_src` with the row's `unique_tag` for Renzo to optionally backfill.
+
+### 7.3 Soft-warning ranges for kg-per-bag (rule 28)
+
+At form entry time, when `disposition_kind = 'flec_bagging'` AND `flec_count IS NOT NULL`, codo computes `kg_per_bag = weight_kg / flec_count` and compares to the bounds on the row's `grade`. If outside bounds, codo shows a non-blocking warning that surfaces the math:
+
+```
+⚠ This row says 18 bags × 14,476 kg → 804 kg/bag.
+  3X50 typically runs 400–700 kg/bag (mean 550, derived from 624 imported rows).
+  Continue anyway, or correct?
+```
+
+Initial seed values for `expected_kg_per_bag_min` / `_max`:
+- 3X50: 400 / 700
+- 2X6: 400 / 650
+- 3.5: NULL / NULL (suppress warnings until we have data)
+- 4X8: NULL / NULL (suppress warnings until we have data)
+
+After Step 4 imports the real rows, a one-shot script in `scripts/tighten_kg_per_bag_bounds.py` recomputes per-grade mean and stdev from `production_event` and updates the bounds to `mean ± 2σ`. Run it once manually after migration; not automatic.
 
 ---
 
 ## §8 — Open questions for Renzo
 
-Most original questions answered during the Step 1 walkthrough. Remaining:
+**All Q1–Q12 closed as of 2026-05-07.** Resolutions:
 
-| # | Question | What it blocks | Default if unanswered |
-|---|---|---|---|
-| Q4 | Validation rules: are there hard rules like "Grade 3X50 only at plant W6" or weight ranges or FLEC AMT-to-WT ratios? | Additional CHECK constraints | Apply only what's already in §7. |
-| Q6 | What `flec_stat` values exist besides `DONE`? Workflow state machine? | State machine design | Closed enum `{None_, Done}`. Add states when known. |
-| Q10 | First-launch UX: OK to require manual Turso DB creation, or auto-create via Turso Platform API? | Step 2 bootstrap UX | Manual; README documents. |
+- **Q1 (BATCH = month?)** — partial: BATCH is a calendar-month label but **not strictly** `month-of(prod_date)` due to same-day month-boundary transitions. Keep as separate TEXT column.
+- **Q2 (CCC RECV semantic)** — row logging date; partner reports OR CI's own draw-down events. Renamed `recv_date`.
+- **Q3 (C1–C4 / RK1–RK4 meaning)** — partner's 4 crushers and 4 rotary kilns. Renamed via `partner_equipment` lookup.
+- **Q4 (validation rules)** — covered by rules 23–28 in §7 + the validity matrix in §7.1 + SRC↔PLANT pairing in §7.2 + soft kg-per-bag bounds in §7.3.
+- **Q5 (`WHSE 7` vs `W7` canonical form)** — `WHSE 7` is canonical. `W6`/`W7` in `WHSE` column are cosmetic and migrate to NULL.
+- **Q6 (`flec_stat` state machine)** — legacy column from when Renzo manually copied rows into WHSE sheets. Now that WHSE sheets auto-fill, the column is dead. codo imports as nullable TEXT for historical fidelity but does NOT validate or write to it.
+- **Q7 (kg-on-hand for WHSE 1/2/5/7?)** — not for those; only WHSE 3 runs in kg, per batch.
+- **Q8 (duplicate UNIQUE TAG)** — confirmed mistake (Renzo: "oh thats probably a mistake then"); migration imports one, drift-logs the other.
+- **Q9 (`NOVEMBER2025RIGHT` etc.)** — DVO batch codes; sequester via `dvo_batch_id`.
+- **Q10 (first-launch UX)** — Path B (auto-create via Turso Platform API). See `PROJECT_BRAIN.md` §5 gotcha #12 for the flow.
+- **Q11 (DVO outflows separate table?)** — no, they stay in `production_event` with `dvo_batch_id` FK; only DVO inflows get their own table (`dvo_receipt`).
+- **Q12 (verbatim formulas needed?)** — no, value-pattern-confirmed picture is sufficient.
 
-Everything else from the original Q1–Q12 list was answered:
-
-- **Q1 (BATCH = month?)** — partial: BATCH is a calendar-month label but **not strictly** `month-of(prod_date)` due to same-day month-boundary transitions. Keep TEXT column.
-- **Q2 (CCC RECV semantic)** — answered: row logging date; partner reports OR CI's draw-down events.
-- **Q3 (C1–C4 / RK1–RK4 meaning)** — answered: partner's 4 crushers and 4 rotary kilns.
-- **Q5 (`WHSE 7` vs `W7` canonical form)** — answered: `WHSE 7` is canonical. `W6`/`W7` in `WHSE` column are cosmetic and migrate to NULL.
-- **Q7 (kg-on-hand for WHSE 1/2/5/7?)** — answered: not for those; only WHSE 3 runs in kg, per batch.
-- **Q8 (duplicate UNIQUE TAG)** — answered: confirmed mistake; migration imports one, drift-logs the other.
-- **Q9 (`NOVEMBER2025RIGHT` etc.)** — answered: DVO batch codes; sequester via `dvo_batch_id`.
-- **Q11 (DVO outflows separate table?)** — answered: no, they stay in `production_event` with `dvo_batch_id` FK; only DVO inflows get their own table (`dvo_receipt`).
-- **Q12 (verbatim formulas needed?)** — answered: no, value-pattern-confirmed picture is sufficient.
+If a new question emerges during Step 2+ implementation, document it here as Q13+ with what it blocks and the working default.
 
 ---
 

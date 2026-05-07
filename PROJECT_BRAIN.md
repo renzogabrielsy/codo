@@ -292,6 +292,14 @@ These are the "you're going to regret this if you don't know it now" findings fr
 
 11. **Workbook copy in `docs/reference/` is a snapshot, not live.** The live file is at `/Users/renzosy/Documents/1A WORK FILES/PRODUCTION/2025 CI PRODUCTION V2.xlsb`. Renzo confirmed the in-repo copy is sufficient for nailing schema, but if a Step 4 migration run needs current data, refresh first.
 
+12. **First-launch flow uses the Turso Platform API to auto-create the database.** Renzo chose Path B in Q10 because codo is meant to be a shippable product — minimal friction matters. The flow:
+    - First launch shows a one-screen onboarding asking for **one Turso Platform API token** (Renzo creates this once at Turso's web UI).
+    - codo calls the Platform API to create a new DB (and group/org if needed), receiving back the DB URL + a DB-level auth token.
+    - Both the URL and the DB-level token are stored in OS keyring via `tauri-plugin-stronghold`. The Platform API token is **not retained** — codo throws it away after creation, so even if the binary is leaked the attacker can't create more DBs on Renzo's account.
+    - From then on, codo reads URL + token from keyring at boot. No prompts.
+    - Edge cases the onboarding handles: Platform API token invalid (re-prompt with helpful error), DB name collision (auto-suffix), org/group selection (prompt if multiple available, default if one), token expiry (prompt for new Platform API token only when needed).
+    - Step 2 includes a `turso_platform.rs` module wrapping the relevant Platform API endpoints (`POST /v1/organizations/{org}/databases`, `POST /v1/organizations/{org}/databases/{name}/auth/tokens`).
+
 ---
 
 ## §6 — What's in the source workbook
@@ -359,7 +367,7 @@ Header columns include: `GOTHONG TRACKING SLIPS`, `ACTUAL WEIGHT`, `DIFF / LOSS`
 - **SRC**: `TNK 1`, `TNK 2`, `TNK 3`, `TNK 4` (W6 plant tanks), `W7` (W7 plant tank), `W6` (W6 direct), `FLEC` (already-bagged inventory), `DVO` (Davao containers)
 - **CCC / FLEC** (`disposition`): `C1`, `C2`, `C3`, `C4` (partner crushers), `RK1`, `RK2`, `RK3`, `RK4` (partner kilns), `FLEC` (CI bagging)
 - **WHSE SIDE**: `LS`, `RS` (only valid for WHSE 1/2/5/7); on WHSE 3 rows the column carries DVO batch codes like `NOVEMBER2025RIGHT` which migrate into `dvo_batch_id`.
-- **FLEC STAT**: `DONE` plus presumably `PENDING`/blank — full set still Q.
+- **FLEC STAT**: `DONE` only. **Legacy column.** Renzo confirmed it used to track whether he had manually copied the row into the WHSE sheets. Now that the WHSE sheets auto-fill, the column is dead — conditional formatting referencing it still exists in the workbook but it's cosmetic. codo imports the column as a nullable TEXT for historical fidelity but does NOT validate, transition, or write to it. If we ever revive a "review pending" workflow, that's a real state machine in a future migration, not this column.
 
 ---
 
@@ -610,15 +618,22 @@ For verbatim formulas, install LibreOffice (`brew install --cask libreoffice`) a
 
 ## §11 — Open questions for Renzo
 
-Most original questions answered during the Step 1 walkthrough. Remaining:
+All original questions are now closed. Summary of resolutions (for posterity):
 
-| # | Question | Blocks | Default if unanswered |
-|---|---|---|---|
-| Q4 | Validation rules: are there hard rules like "Grade 3X50 only at plant W6" or weight ranges or FLEC AMT-to-WT ratios? | Additional CHECK constraints | Apply only what's already in §7. |
-| Q6 | What `flec_stat` values exist besides `DONE`? Is it a workflow state machine? | State machine design (anti-pattern #1) | Closed enum `{None_, Done}`. Add states when known. |
-| Q10 | First-launch UX: OK to require manual Turso DB creation, or should codo auto-create via Platform API? | Step 2 bootstrap UX | Manual; README documents. |
+- **Q1 (BATCH = month?)**: not strictly equal at boundaries — same-day batch transitions occur (closing MAY by emptying the tank, then starting JUNE on the same physical day). Keep BATCH as a separate TEXT column.
+- **Q2 (CCC RECV semantic)**: row's logging date — partner reports OR CI's own draw-down events. Renamed `recv_date`.
+- **Q3 (C1–C4 / RK1–RK4)**: partner's 4 crushers and 4 rotary kilns. Renamed via `partner_equipment` lookup.
+- **Q4 (validation rules)**: closed via Renzo's walkthrough — see §6.7 of `docs/schema-extraction.md` for the full validity matrix and the SRC↔PLANT pairing rules.
+- **Q5 (canonical form)**: `WHSE 7` is canonical. `W6`/`W7` in the `WHSE` column are cosmetic and migrate to NULL.
+- **Q6 (`flec_stat` state machine)**: closed — `flec_stat` is a legacy column from when Renzo manually copied entries into WHSE sheets. Now that WHSE sheets auto-fill, the column is dead. codo imports it as a nullable TEXT for historical fidelity but does NOT validate or write to it. If we revive a review-pending workflow it'll be a real new state machine in a future migration.
+- **Q7 (kg balance for WHSE 1/2/5/7?)**: no — only WHSE 3 runs in kg, per batch.
+- **Q8 (duplicate UNIQUE TAG)**: confirmed mistake. Migration imports one, drift-logs the other.
+- **Q9 (`NOVEMBER2025RIGHT` etc.)**: DVO batch codes; sequester via `dvo_batch_id`.
+- **Q10 (first-launch UX)**: closed — Path B (auto-create via Turso Platform API). See §5 gotcha #12 for the flow.
+- **Q11 (DVO outflows separate table?)**: no, they stay in `production_event` with `dvo_batch_id` FK; only DVO inflows get their own table (`dvo_receipt`).
+- **Q12 (verbatim formulas needed?)**: no, value-pattern-confirmed picture is sufficient.
 
-Don't surface to Renzo individually unless a step needs the answer.
+If a new question emerges during Step 2+ implementation, document it here as Q13+ with what it blocks and the working default.
 
 ---
 
@@ -629,11 +644,12 @@ Don't surface to Renzo individually unless a step needs the answer.
 | **CCC** | Just the partner company's codename. Has no domain meaning. The `CCC RECV` column is the row's logging date; `CCC / FLEC` mixes "what CI did" (FLEC) with "which partner equipment got it" (C1–C4 crushers, RK1–RK4 kilns). codo renames these to remove the legacy baggage. |
 | **FLEC** | Short for "flecon bag." The unit CI ships finished charcoal in. `FLEC AMT = 30` means 30 bags. WHSE 1/2/5/7 ledgers run in flec count, not kg. |
 | **GRADE** | Product grade. Values: `3X50`, `2X6`, `3.5`, `4X8`. The numbers refer to bag dimensions or sieve sizes (industry-specific). |
-| **PLANT** | CI's physical production plant on the Cebu site. `W6` (multi-tank), `W7` (single-tank), `W6/W7` (combined operation across both), `DVO` (Davao plant — appears on outflow rows from WHSE 3 representing partner takes of Davao product). |
+| **PLANT** | CI's physical production plant on the Cebu site. `W6` (multi-tank), `W7` (single-tank), `DVO` (Davao plant — appears on outflow rows from WHSE 3 representing partner takes of Davao product). The legacy value `W6 / W7` (87 rows in observed data) was Renzo's earlier attempt to track which CI plant produced flec that ended up in inventory — abandoned as unsustainable. Migration normalizes `W6 / W7` to `NULL` when the source is `FLEC` (origin plant is unknown once bagged), and to the source's home plant otherwise. |
 | **WHSE** (column) | Destination warehouse for the event. Real values: `WHSE 1`, `WHSE 2`, `WHSE 3`, `WHSE 5`, `WHSE 7`. Other values (`W6`, `W7`) in this column are cosmetic — pre-auto-fill noise — and migrate as NULL. |
 | **SRC** | Source location of the product in this event. The truthful field for "where did this come from." Tanks (`TNK 1..4`), the W7 plant tank (`W7`), direct W6 plant output (`W6`), already-bagged inventory (`FLEC`), or Davao container (`DVO`). |
 | **TNK 1..4** | The four tanks at plant W6. 3X50 charcoal accumulates here from the plant; partner draws from them daily. |
-| **W6 / W7 (as `SRC`)** | Direct plant output, bypassing tanks. Used for non-3X50 grades that come straight out as flec bags. |
+| **W6 (as `SRC`)** | Direct W6-plant output, **bypassing tanks**. Typical for non-3X50 grades (3.5, 2X6, 4X8) that come straight out as flec bags. Note: W6 the plant ALSO feeds the four tanks, but those events use `SRC = TNK n`, not `SRC = W6`. |
+| **W7 (as `SRC`)** | The single tank at plant W7. Used for both tank-stage and direct-plant events at W7 (W7 doesn't have a separate "plant_direct" code in observed data). |
 | **Tank assignment** | Conventional mapping of `(plant, tank, prod_date, shift, batch)` to a particular production lot. **Never logged explicitly** — derived from rows that reference the tank. |
 | **SHIFT** | Production shift. `M` = Morning, `E` = Evening, `N` = Night. Only `M` observed in real data. |
 | **WHSE SIDE** | For WHSE 1/2/5/7: physical side (`LS` = Left Side, `RS` = Right Side). For WHSE 3 outflow rows: hijacked to carry the DVO batch code (e.g. `NOVEMBER2025RIGHT`); codo migrates these into `dvo_batch_id`. |
