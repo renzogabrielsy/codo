@@ -49,6 +49,7 @@ pub fn run() {
             commands::current_version,
             commands::list_lookups,
             commands::create_production_event,
+            commands::create_production_events_bulk,
             commands::list_recent_events,
         ])
         .run(tauri::generate_context!())

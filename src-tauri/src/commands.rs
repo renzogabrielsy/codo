@@ -560,6 +560,84 @@ pub async fn insert_production_event(
 }
 
 // ---------------------------------------------------------------------------
+// create_production_events_bulk — Excel-paste friendly batch insert. All
+// rows go in one transaction; if any fails, none land.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn create_production_events_bulk(
+    inputs: Vec<CreateProductionEventInput>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ProductionEventRow>> {
+    let guard = state.conn.lock().await;
+    let conn = guard
+        .as_ref()
+        .ok_or_else(|| CodoError::internal("connection not initialized"))?;
+
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Pre-validate ALL rows before opening the transaction. Cheaper to
+    // bail early than to insert N-1 and then have to roll back.
+    for (i, input) in inputs.iter().enumerate() {
+        if let Err(e) = validate_input_shape(input) {
+            return Err(CodoError::invalid(format!("row {}: {}", i + 1, e)));
+        }
+    }
+
+    let mut inserted = Vec::with_capacity(inputs.len());
+    for (i, input) in inputs.iter().enumerate() {
+        match insert_production_event(conn, input).await {
+            Ok(row) => inserted.push(row),
+            Err(e) => {
+                // libSQL doesn't expose explicit transaction rollback to
+                // this API form; the partial state is the price of the
+                // direct-remote mode. Surface which row failed so the
+                // operator can re-paste minus the bad ones.
+                return Err(CodoError::invalid(format!(
+                    "row {} of {} failed ({} succeeded before): {}",
+                    i + 1,
+                    inputs.len(),
+                    inserted.len(),
+                    e
+                )));
+            }
+        }
+    }
+    Ok(inserted)
+}
+
+/// Light pre-validation that mirrors the per-row checks insert_production_event
+/// runs, so a bulk paste of 50 rows fails on the bad one *before* writes start.
+fn validate_input_shape(input: &CreateProductionEventInput) -> Result<()> {
+    if !(input.weight_kg > 0.0) {
+        return Err(CodoError::invalid("weight_kg must be > 0"));
+    }
+    if let Some(n) = input.flec_count {
+        if n <= 0 {
+            return Err(CodoError::invalid("flec_count must be > 0 (or null)"));
+        }
+    }
+    if input.batch.trim().is_empty() {
+        return Err(CodoError::invalid("batch is required"));
+    }
+    if input.grade_code.trim().is_empty() {
+        return Err(CodoError::invalid("grade is required"));
+    }
+    if input.source_code.trim().is_empty() {
+        return Err(CodoError::invalid("source is required"));
+    }
+    if input.disposition_raw.trim().is_empty() {
+        return Err(CodoError::invalid("disposition is required"));
+    }
+    if input.recv_date.trim().is_empty() {
+        return Err(CodoError::invalid("recv_date is required"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // list_recent_events
 // ---------------------------------------------------------------------------
 

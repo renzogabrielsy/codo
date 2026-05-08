@@ -3,8 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
-  import RecentEventsTable from '$lib/components/RecentEventsTable.svelte';
-  import LogEventForm from '$lib/components/LogEventForm.svelte';
+  import LogTable from '$lib/components/LogTable.svelte';
   import type { LookupBundle, ProductionEventRow } from '$lib/types/codo';
 
   type BootState =
@@ -57,10 +56,10 @@
     state = { ...state, recent };
   }
 
-  function handleSaved(row: ProductionEventRow) {
-    // Optimistically prepend; refreshRecent in the background will re-pull.
+  function handleSaved(newRows: ProductionEventRow[]) {
+    // Optimistic prepend; refreshRecent in the background will re-pull.
     if (state.kind !== 'ready') return;
-    state = { ...state, recent: [row, ...state.recent].slice(0, 20) };
+    state = { ...state, recent: [...newRows, ...state.recent].slice(0, 20) };
     refreshRecent();
   }
 
@@ -95,11 +94,8 @@
       <div class="text-xs text-neutral-600 font-mono">CI Cebu · Step 3 vertical slice</div>
     </header>
 
-    <!-- Recent events -->
-    <RecentEventsTable rows={state.recent} />
-
-    <!-- Log form -->
-    <LogEventForm lookups={state.lookups} onSaved={handleSaved} />
+    <!-- Unified log: input row IS the next row visually -->
+    <LogTable lookups={state.lookups} rows={state.recent} onSaved={handleSaved} />
 
     <!-- Updater (small panel at the bottom) -->
     <details class="text-xs">
