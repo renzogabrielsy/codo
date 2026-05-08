@@ -5,6 +5,10 @@ description = "codo — local production-event log for CI charcoal manufacturing
 authors = ["Renzo Sy"]
 edition = "2021"
 rust-version = "1.77"
+# `cargo run` (no --bin) launches the Tauri app, not the migration CLI.
+# Without this, adding the codo-migrate bin made `cargo run` ambiguous and
+# `tauri dev` errored.
+default-run = "codo"
 
 [lib]
 name = "codo_lib"

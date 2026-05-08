@@ -117,6 +117,217 @@
   let { lookups, rows, onSaved }: Props = $props();
 
   // -------------------------------------------------------------------------
+  // History data-grid state: filter / sort / paginate. Client-side because
+  // 755+ rows fit in memory comfortably; this is faster than round-tripping
+  // and dodges any DB-side query latency.
+  // -------------------------------------------------------------------------
+
+  type SortDir = 'asc' | 'desc';
+  type SortKey =
+    | 'recv_date'
+    | 'prod_date'
+    | 'batch'
+    | 'shift_code'
+    | 'grade_code'
+    | 'source_code'
+    | 'plant_code'
+    | 'warehouse_code'
+    | 'whse_side'
+    | 'weight_kg'
+    | 'flec_count'
+    | 'disposition_kind'
+    | 'unique_tag'
+    | 'id';
+
+  let filterSources = $state<Set<string>>(new Set());
+  let filterGrades = $state<Set<string>>(new Set());
+  let filterDispositions = $state<Set<string>>(new Set());
+  let filterWarehouses = $state<Set<string>>(new Set());
+  let filterDateFrom = $state('');
+  let filterDateTo = $state('');
+  let filterBatch = $state('');
+  let globalSearch = $state('');
+  let sortKey = $state<SortKey>('id');
+  let sortDir = $state<SortDir>('desc');
+  let pageSize = $state<number>(100);
+  let pageIndex = $state<number>(0);
+  let expandedRowId = $state<number | null>(null);
+  let columnPickerOpen = $state(false);
+
+  // Column visibility — persisted to localStorage so toggling sticks.
+  const ALL_COLS = [
+    'recv', 'prod', 'batch', 'shift', 'grade', 'source', 'plant',
+    'warehouse', 'side', 'weight', 'flec', 'dest', 'notes'
+  ] as const;
+  type ColKey = (typeof ALL_COLS)[number];
+  function loadVisibleCols(): Set<ColKey> {
+    if (typeof localStorage === 'undefined') return new Set(ALL_COLS);
+    const raw = localStorage.getItem('codo-visible-cols');
+    if (!raw) return new Set(ALL_COLS);
+    try {
+      const arr = JSON.parse(raw) as string[];
+      const valid = arr.filter((c): c is ColKey => (ALL_COLS as readonly string[]).includes(c));
+      return valid.length > 0 ? new Set(valid) : new Set(ALL_COLS);
+    } catch {
+      return new Set(ALL_COLS);
+    }
+  }
+  let visibleCols = $state<Set<ColKey>>(loadVisibleCols());
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem('codo-visible-cols', JSON.stringify([...visibleCols]));
+  });
+  function toggleCol(c: ColKey) {
+    const next = new Set(visibleCols);
+    if (next.has(c)) next.delete(c);
+    else next.add(c);
+    visibleCols = next;
+  }
+
+  // Toggle helpers for filter chips.
+  function toggleSet<T>(set: Set<T>, value: T): Set<T> {
+    const next = new Set(set);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    return next;
+  }
+
+  // Reset all filters back to no-filter / default sort.
+  function resetFilters() {
+    filterSources = new Set();
+    filterGrades = new Set();
+    filterDispositions = new Set();
+    filterWarehouses = new Set();
+    filterDateFrom = '';
+    filterDateTo = '';
+    filterBatch = '';
+    globalSearch = '';
+    sortKey = 'id';
+    sortDir = 'desc';
+    pageIndex = 0;
+  }
+
+  // Click a column header → cycle through desc → asc → unsorted (id desc).
+  function clickSort(col: SortKey) {
+    if (sortKey !== col) {
+      sortKey = col;
+      sortDir = 'desc';
+    } else if (sortDir === 'desc') {
+      sortDir = 'asc';
+    } else {
+      sortKey = 'id';
+      sortDir = 'desc';
+    }
+    pageIndex = 0;
+  }
+  function sortIndicator(col: SortKey): string {
+    if (sortKey !== col) return '';
+    return sortDir === 'asc' ? ' ↑' : ' ↓';
+  }
+
+  const filteredRows = $derived.by(() => {
+    let arr = rows;
+    if (filterSources.size > 0)
+      arr = arr.filter((r) => filterSources.has(r.source_code));
+    if (filterGrades.size > 0)
+      arr = arr.filter((r) => filterGrades.has(r.grade_code));
+    if (filterDispositions.size > 0)
+      arr = arr.filter((r) => filterDispositions.has(r.disposition_kind));
+    if (filterWarehouses.size > 0)
+      arr = arr.filter((r) => filterWarehouses.has(r.warehouse_code ?? '__null__'));
+    if (filterDateFrom)
+      arr = arr.filter((r) => r.recv_date >= filterDateFrom);
+    if (filterDateTo)
+      arr = arr.filter((r) => r.recv_date <= filterDateTo);
+    if (filterBatch.trim()) {
+      const q = filterBatch.trim().toUpperCase();
+      arr = arr.filter((r) => r.batch.toUpperCase().includes(q));
+    }
+    if (globalSearch.trim()) {
+      const q = globalSearch.trim().toLowerCase();
+      arr = arr.filter(
+        (r) =>
+          r.unique_tag.toLowerCase().includes(q) ||
+          (r.notes ?? '').toLowerCase().includes(q) ||
+          r.batch.toLowerCase().includes(q)
+      );
+    }
+    return arr;
+  });
+
+  const sortedRows = $derived.by(() => {
+    const arr = [...filteredRows];
+    const key = sortKey;
+    const mult = sortDir === 'asc' ? 1 : -1;
+    arr.sort((a, b) => {
+      const av = (a as Record<string, unknown>)[key];
+      const bv = (b as Record<string, unknown>)[key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1; // nulls last
+      if (bv == null) return -1;
+      if (typeof av === 'number' && typeof bv === 'number')
+        return (av - bv) * mult;
+      return String(av).localeCompare(String(bv), undefined, { numeric: true }) * mult;
+    });
+    return arr;
+  });
+
+  const totalPages = $derived(
+    pageSize === 0 ? 1 : Math.max(1, Math.ceil(sortedRows.length / pageSize))
+  );
+  const pagedRows = $derived.by(() => {
+    if (pageSize === 0) return sortedRows; // 0 == "all"
+    const start = pageIndex * pageSize;
+    return sortedRows.slice(start, start + pageSize);
+  });
+  $effect(() => {
+    if (pageIndex >= totalPages) pageIndex = Math.max(0, totalPages - 1);
+  });
+
+  const filteredCountLabel = $derived(
+    sortedRows.length === rows.length
+      ? `${rows.length} rows`
+      : `${sortedRows.length} of ${rows.length}`
+  );
+
+  // CSV export of the currently filtered+sorted set.
+  function exportCsv() {
+    const headers = [
+      'recv_date', 'prod_date', 'batch', 'shift_code', 'grade_code',
+      'source_code', 'plant_code', 'warehouse_code', 'whse_side',
+      'weight_kg', 'flec_count', 'disposition_kind', 'partner_equipment_code',
+      'unique_tag', 'notes', 'created_at'
+    ];
+    const escape = (v: unknown): string => {
+      if (v == null) return '';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n'))
+        return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const lines = [
+      headers.join(','),
+      ...sortedRows.map((r) =>
+        headers.map((h) => escape((r as Record<string, unknown>)[h])).join(',')
+      )
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `codo-events-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // For filter dropdowns: distinct values from the loaded rows + lookups.
+  const distinctWarehouses = $derived(
+    [...new Set(rows.map((r) => r.warehouse_code).filter((w): w is string => w !== null))].sort()
+  );
+
+  // -------------------------------------------------------------------------
   // Drafts: editable rows the operator stages BEFORE pressing Submit all.
   // After successful submit, drafts collapse back to one empty row.
   // After a partial failure, successful drafts are removed; the failed one
@@ -720,59 +931,355 @@
         </tr>
 
         <!-- HISTORY: saved, immutable rows below the drafts. -->
-        <tr class="bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-500 text-[11px] uppercase tracking-wider font-semibold">
+        <tr class="bg-neutral-100 text-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 text-[11px] uppercase tracking-wider font-semibold">
           <td colspan="15" class="px-3 py-1.5">
-            ── History (last {rows.length}) ──
+            <div class="flex items-center justify-between gap-3">
+              <span>── History · {filteredCountLabel} ──</span>
+              <div class="flex items-center gap-2 normal-case tracking-normal">
+                <input
+                  type="search"
+                  bind:value={globalSearch}
+                  placeholder="search notes / tag / batch…"
+                  class="rounded border border-neutral-300 bg-white dark:border-neutral-700 dark:bg-neutral-950 px-2 py-1 text-xs font-mono text-neutral-900 dark:text-neutral-100 w-48 focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  onclick={resetFilters}
+                  class="rounded border border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-1 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                >
+                  reset filters
+                </button>
+                <button
+                  type="button"
+                  onclick={exportCsv}
+                  class="rounded border border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-1 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                  title="download filtered set as CSV"
+                >
+                  export CSV
+                </button>
+                <div class="relative">
+                  <button
+                    type="button"
+                    onclick={() => (columnPickerOpen = !columnPickerOpen)}
+                    class="rounded border border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-1 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                  >
+                    columns ▾
+                  </button>
+                  {#if columnPickerOpen}
+                    <div
+                      class="absolute right-0 top-full mt-1 z-10 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg p-2 min-w-[140px]"
+                    >
+                      {#each ALL_COLS as c (c)}
+                        <label class="flex items-center gap-2 px-2 py-1 text-xs text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={visibleCols.has(c)}
+                            onchange={() => toggleCol(c)}
+                          />
+                          <span>{c}</span>
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </div>
           </td>
         </tr>
+
+        <!-- Filter chip row: per-column quick filters. -->
+        <tr class="bg-neutral-50 dark:bg-neutral-900/40 text-[11px] text-neutral-700 dark:text-neutral-400">
+          <td></td>
+          <td colspan="2" class="px-2 py-1.5">
+            <div class="flex items-center gap-1">
+              <input
+                type="text"
+                placeholder="from M/D"
+                bind:value={filterDateFrom}
+                onchange={() => {
+                  const iso = parseDateLoose(filterDateFrom);
+                  if (iso) filterDateFrom = iso;
+                }}
+                class="w-16 rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 font-mono"
+              />
+              <span class="text-neutral-500">→</span>
+              <input
+                type="text"
+                placeholder="to M/D"
+                bind:value={filterDateTo}
+                onchange={() => {
+                  const iso = parseDateLoose(filterDateTo);
+                  if (iso) filterDateTo = iso;
+                }}
+                class="w-16 rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 font-mono"
+              />
+            </div>
+          </td>
+          <td class="px-2 py-1.5">
+            <input
+              type="text"
+              placeholder="batch…"
+              bind:value={filterBatch}
+              class="w-full rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 font-mono uppercase"
+            />
+          </td>
+          <td></td>
+          <td class="px-2 py-1.5">
+            <details class="relative">
+              <summary class="cursor-pointer rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 list-none">
+                Grade ({filterGrades.size || 'any'})
+              </summary>
+              <div class="absolute z-10 top-full left-0 mt-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg p-1 min-w-[100px]">
+                {#each lookups.grades as g (g.code)}
+                  <label class="flex items-center gap-1 px-1 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterGrades.has(g.code)}
+                      onchange={() => (filterGrades = toggleSet(filterGrades, g.code))}
+                    />
+                    <span class="font-mono">{g.code}</span>
+                  </label>
+                {/each}
+              </div>
+            </details>
+          </td>
+          <td class="px-2 py-1.5">
+            <details class="relative">
+              <summary class="cursor-pointer rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 list-none">
+                Source ({filterSources.size || 'any'})
+              </summary>
+              <div class="absolute z-10 top-full left-0 mt-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg p-1 min-w-[120px]">
+                {#each lookups.source_locations as s (s.code)}
+                  <label class="flex items-center gap-1 px-1 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterSources.has(s.code)}
+                      onchange={() => (filterSources = toggleSet(filterSources, s.code))}
+                    />
+                    <span class="font-mono">{s.code}</span>
+                  </label>
+                {/each}
+              </div>
+            </details>
+          </td>
+          <td></td>
+          <td class="px-2 py-1.5">
+            <details class="relative">
+              <summary class="cursor-pointer rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 list-none">
+                Whse ({filterWarehouses.size || 'any'})
+              </summary>
+              <div class="absolute z-10 top-full left-0 mt-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg p-1 min-w-[110px]">
+                {#each distinctWarehouses as w (w)}
+                  <label class="flex items-center gap-1 px-1 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterWarehouses.has(w)}
+                      onchange={() => (filterWarehouses = toggleSet(filterWarehouses, w))}
+                    />
+                    <span class="font-mono">{w}</span>
+                  </label>
+                {/each}
+              </div>
+            </details>
+          </td>
+          <td colspan="3"></td>
+          <td class="px-2 py-1.5">
+            <details class="relative">
+              <summary class="cursor-pointer rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 list-none">
+                Dest ({filterDispositions.size || 'any'})
+              </summary>
+              <div class="absolute z-10 top-full right-0 mt-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg p-1 min-w-[140px]">
+                {#each [
+                  { kind: 'flec_bagging', label: 'FLEC' },
+                  { kind: 'partner_crusher', label: 'Crushers (C1-4)' },
+                  { kind: 'partner_kiln', label: 'Kilns (RK1-4)' }
+                ] as d (d.kind)}
+                  <label class="flex items-center gap-1 px-1 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filterDispositions.has(d.kind)}
+                      onchange={() => (filterDispositions = toggleSet(filterDispositions, d.kind))}
+                    />
+                    <span>{d.label}</span>
+                  </label>
+                {/each}
+              </div>
+            </details>
+          </td>
+          <td colspan="2"></td>
+        </tr>
+
+        <!-- Sortable column header row, scoped to history. Click to cycle desc → asc → unsorted. -->
+        <tr class="bg-neutral-100 dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 text-[11px] uppercase tracking-wider sticky top-0">
+          <td></td>
+          {#each [
+            { col: 'recv_date' as SortKey, label: 'Recv', vis: 'recv' as ColKey },
+            { col: 'prod_date' as SortKey, label: 'Prod', vis: 'prod' as ColKey },
+            { col: 'batch' as SortKey, label: 'Batch', vis: 'batch' as ColKey },
+            { col: 'shift_code' as SortKey, label: 'Sh', vis: 'shift' as ColKey },
+            { col: 'grade_code' as SortKey, label: 'Grade', vis: 'grade' as ColKey },
+            { col: 'source_code' as SortKey, label: 'Source', vis: 'source' as ColKey },
+            { col: 'plant_code' as SortKey, label: 'Plant', vis: 'plant' as ColKey },
+            { col: 'warehouse_code' as SortKey, label: 'Whse', vis: 'warehouse' as ColKey },
+            { col: 'whse_side' as SortKey, label: 'Side', vis: 'side' as ColKey },
+            { col: 'weight_kg' as SortKey, label: 'kg', vis: 'weight' as ColKey, right: true },
+            { col: 'flec_count' as SortKey, label: 'Flec', vis: 'flec' as ColKey, right: true },
+            { col: 'disposition_kind' as SortKey, label: 'Dest', vis: 'dest' as ColKey },
+            { col: 'unique_tag' as SortKey, label: 'Notes', vis: 'notes' as ColKey, suppress: true }
+          ] as h (h.col)}
+            <th
+              class="font-semibold cursor-pointer hover:text-emerald-700 dark:hover:text-emerald-300 select-none {h.right ? 'text-right' : 'text-left'} {visibleCols.has(h.vis) ? 'px-2 py-1.5' : 'hidden'}"
+              onclick={() => clickSort(h.col)}
+            >
+              {h.suppress ? 'Notes' : h.label}{sortIndicator(h.col)}
+            </th>
+          {/each}
+          <td></td>
+        </tr>
+
         {#if rows.length === 0}
           <tr>
             <td colspan="15" class="px-3 py-4 text-center italic text-neutral-500 dark:text-neutral-600">
               no saved events yet
             </td>
           </tr>
+        {:else if pagedRows.length === 0}
+          <tr>
+            <td colspan="15" class="px-3 py-4 text-center italic text-neutral-500 dark:text-neutral-600">
+              no events match the current filters
+            </td>
+          </tr>
         {:else}
-          {#each rows as row (row.id)}
+          {#each pagedRows as row (row.id)}
             <tr
-              class="border-t border-neutral-200 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/40 text-neutral-800 dark:text-neutral-300 {rowTintByKind(
+              class="border-t border-neutral-200 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/40 text-neutral-800 dark:text-neutral-300 cursor-pointer {rowTintByKind(
                 row.disposition_kind
               )}"
+              onclick={() => (expandedRowId = expandedRowId === row.id ? null : row.id)}
             >
               <td></td>
-              <td class="px-2 py-1.5 text-neutral-900 dark:text-neutral-200">
+              <td class="px-2 py-1.5 text-neutral-900 dark:text-neutral-200 {visibleCols.has('recv') ? '' : 'hidden'}">
                 {fmtDate(row.recv_date)}
               </td>
-              <td class="px-2 py-1.5 text-neutral-500">{fmtDate(row.prod_date)}</td>
-              <td class="px-2 py-1.5 text-neutral-800 dark:text-neutral-300">{row.batch}</td>
-              <td class="px-2 py-1.5 text-neutral-800 dark:text-neutral-300">
+              <td class="px-2 py-1.5 text-neutral-500 {visibleCols.has('prod') ? '' : 'hidden'}">
+                {fmtDate(row.prod_date)}
+              </td>
+              <td class="px-2 py-1.5 text-neutral-800 dark:text-neutral-300 {visibleCols.has('batch') ? '' : 'hidden'}">
+                {row.batch}
+              </td>
+              <td class="px-2 py-1.5 text-neutral-800 dark:text-neutral-300 {visibleCols.has('shift') ? '' : 'hidden'}">
                 {row.shift_code ?? ''}
               </td>
-              <td class="px-2 py-1.5 text-violet-700 dark:text-violet-300">{row.grade_code}</td>
-              <td class="px-2 py-1.5 text-cyan-700 dark:text-cyan-300">{row.source_code}</td>
-              <td class="px-2 py-1.5 italic text-neutral-500">{row.plant_code ?? ''}</td>
-              <td class="px-2 py-1.5 text-amber-700 dark:text-amber-300">
+              <td class="px-2 py-1.5 text-violet-700 dark:text-violet-300 {visibleCols.has('grade') ? '' : 'hidden'}">
+                {row.grade_code}
+              </td>
+              <td class="px-2 py-1.5 text-cyan-700 dark:text-cyan-300 {visibleCols.has('source') ? '' : 'hidden'}">
+                {row.source_code}
+              </td>
+              <td class="px-2 py-1.5 italic text-neutral-500 {visibleCols.has('plant') ? '' : 'hidden'}">
+                {row.plant_code ?? ''}
+              </td>
+              <td class="px-2 py-1.5 text-amber-700 dark:text-amber-300 {visibleCols.has('warehouse') ? '' : 'hidden'}">
                 {row.warehouse_code ?? ''}
               </td>
-              <td class="px-2 py-1.5">{row.whse_side ?? ''}</td>
-              <td class="px-2 py-1.5 text-right font-semibold text-neutral-900 dark:text-neutral-100">
+              <td class="px-2 py-1.5 {visibleCols.has('side') ? '' : 'hidden'}">
+                {row.whse_side ?? ''}
+              </td>
+              <td class="px-2 py-1.5 text-right font-semibold text-neutral-900 dark:text-neutral-100 {visibleCols.has('weight') ? '' : 'hidden'}">
                 {fmtKg(row.weight_kg)}
               </td>
-              <td class="px-2 py-1.5 text-right text-neutral-700 dark:text-neutral-300">
+              <td class="px-2 py-1.5 text-right text-neutral-700 dark:text-neutral-300 {visibleCols.has('flec') ? '' : 'hidden'}">
                 {row.flec_count ?? ''}
               </td>
-              <td class="px-2 py-1.5">
+              <td class="px-2 py-1.5 {visibleCols.has('dest') ? '' : 'hidden'}">
                 <span class={dispositionBadgeClass(row)}>{disp(row)}</span>
               </td>
-              <td class="px-2 py-1.5 truncate text-neutral-600 dark:text-neutral-500" title={row.notes ?? ''}>
+              <td
+                class="px-2 py-1.5 truncate text-neutral-600 dark:text-neutral-500 {visibleCols.has('notes') ? '' : 'hidden'}"
+                title={row.notes ?? ''}
+              >
                 {row.notes ?? ''}
               </td>
               <td></td>
             </tr>
+            {#if expandedRowId === row.id}
+              <tr class="bg-neutral-100/60 dark:bg-neutral-900/60 text-xs">
+                <td></td>
+                <td colspan="14" class="px-3 py-2">
+                  <div class="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1 font-mono text-neutral-700 dark:text-neutral-300">
+                    <div><span class="text-neutral-500">id:</span> {row.id}</div>
+                    <div><span class="text-neutral-500">recv:</span> {row.recv_date}</div>
+                    <div><span class="text-neutral-500">prod:</span> {row.prod_date ?? '—'}</div>
+                    <div><span class="text-neutral-500">created_at:</span> {row.created_at}</div>
+                    <div class="md:col-span-2 truncate" title={row.unique_tag}>
+                      <span class="text-neutral-500">unique_tag:</span> {row.unique_tag}
+                    </div>
+                    {#if row.notes}
+                      <div class="md:col-span-3">
+                        <span class="text-neutral-500">notes:</span> {row.notes}
+                      </div>
+                    {/if}
+                  </div>
+                </td>
+              </tr>
+            {/if}
           {/each}
         {/if}
       </tbody>
     </table>
   </div>
+
+  <!-- Pagination footer -->
+  {#if rows.length > 0}
+    <div class="flex items-center justify-between px-3 py-1.5 border-t border-neutral-300 dark:border-neutral-800 text-xs text-neutral-700 dark:text-neutral-400 font-mono">
+      <div class="flex items-center gap-2">
+        <span>page</span>
+        <input
+          type="number"
+          min="1"
+          max={totalPages}
+          value={pageIndex + 1}
+          oninput={(e) => {
+            const n = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+            if (Number.isFinite(n)) pageIndex = Math.max(0, Math.min(totalPages - 1, n - 1));
+          }}
+          class="w-12 rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5 text-center"
+        />
+        <span>of {totalPages}</span>
+        <span class="text-neutral-500">·</span>
+        <select
+          bind:value={pageSize}
+          onchange={() => (pageIndex = 0)}
+          class="rounded bg-white dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 px-1 py-0.5"
+        >
+          <option value={50}>50/page</option>
+          <option value={100}>100/page</option>
+          <option value={200}>200/page</option>
+          <option value={0}>all</option>
+        </select>
+        <span class="text-neutral-500">·</span>
+        <span>{filteredCountLabel}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={pageIndex === 0}
+          onclick={() => (pageIndex = Math.max(0, pageIndex - 1))}
+          class="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          ← prev
+        </button>
+        <button
+          type="button"
+          disabled={pageIndex >= totalPages - 1}
+          onclick={() => (pageIndex = Math.min(totalPages - 1, pageIndex + 1))}
+          class="rounded border border-neutral-300 dark:border-neutral-700 px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          next →
+        </button>
+      </div>
+    </div>
+  {/if}
 
   <!-- Datalists (invisible). They feed the type-ahead inputs. -->
   <datalist id="dl-shifts">

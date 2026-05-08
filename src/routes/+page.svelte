@@ -48,11 +48,14 @@
       state = { kind: 'loading', step: 'opening local database…' };
       await invoke<void>('init_db');
 
-      state = { kind: 'loading', step: 'loading lookups + recent events…' };
+      state = { kind: 'loading', step: 'loading lookups + events…' };
       const [version, lookups, recent] = await Promise.all([
         invoke<string>('current_version'),
         invoke<LookupBundle>('list_lookups'),
-        invoke<ProductionEventRow[]>('list_recent_events', { limit: 20 })
+        // 755 historical rows fit comfortably in memory; client-side
+        // filter/sort/paginate has no latency vs. round-tripping for
+        // every filter change. We bump the cap when data growth warrants.
+        invoke<ProductionEventRow[]>('list_recent_events', { limit: 10000 })
       ]);
       state = { kind: 'ready', version, lookups, recent };
     } catch (err) {
@@ -62,13 +65,13 @@
 
   async function refreshRecent() {
     if (state.kind !== 'ready') return;
-    const recent = await invoke<ProductionEventRow[]>('list_recent_events', { limit: 20 });
+    const recent = await invoke<ProductionEventRow[]>('list_recent_events', { limit: 10000 });
     state = { ...state, recent };
   }
 
   function handleSaved(newRows: ProductionEventRow[]) {
     if (state.kind !== 'ready') return;
-    state = { ...state, recent: [...newRows, ...state.recent].slice(0, 20) };
+    state = { ...state, recent: [...newRows, ...state.recent] };
     refreshRecent();
   }
 
