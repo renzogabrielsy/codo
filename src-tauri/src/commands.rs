@@ -25,11 +25,12 @@ use tauri::State;
 // Onboarding / boot — unchanged from Step 2.
 // ---------------------------------------------------------------------------
 
-/// True if Turso credentials are already in the keyring (i.e. onboarding has
-/// happened on this machine before).
+/// True if Turso credentials are already known to codo this session (cached
+/// or in the keyring). Cache-aware so repeated boots don't spam Keychain
+/// prompts on unsigned dev binaries.
 #[tauri::command]
-pub async fn is_onboarded() -> Result<bool> {
-    Ok(credentials::load()?.is_some())
+pub async fn is_onboarded(state: State<'_, AppState>) -> Result<bool> {
+    Ok(credentials::load_via(&state).await?.is_some())
 }
 
 /// First-launch onboarding. Takes a Turso Platform API token, creates a DB,
@@ -39,6 +40,7 @@ pub async fn is_onboarded() -> Result<bool> {
 pub async fn onboard_turso(
     platform_token: String,
     db_name: String,
+    state: State<'_, AppState>,
 ) -> Result<OnboardSummary> {
     if platform_token.trim().is_empty() {
         return Err(CodoError::invalid("platform token is required"));
@@ -52,7 +54,7 @@ pub async fn onboard_turso(
         },
     };
     let result = turso_platform::onboard(req).await?;
-    credentials::store(&result.creds)?;
+    credentials::store_via(&state, &result.creds).await?;
     Ok(OnboardSummary {
         org_slug: result.org_slug,
         db_name: result.final_db_name,
@@ -69,8 +71,8 @@ pub struct OnboardSummary {
 
 /// Apply DDL migrations to the REMOTE Turso DB.
 #[tauri::command]
-pub async fn run_remote_migrations() -> Result<()> {
-    let creds = credentials::require()?;
+pub async fn run_remote_migrations(state: State<'_, AppState>) -> Result<()> {
+    let creds = credentials::require_via(&state).await?;
     db::apply_to_remote(&creds).await?;
     Ok(())
 }
@@ -80,7 +82,16 @@ pub async fn run_remote_migrations() -> Result<()> {
 /// stabilizes). Stores the connection in `AppState`.
 #[tauri::command]
 pub async fn init_local_replica(state: State<'_, AppState>) -> Result<()> {
-    let creds: TursoCreds = credentials::require()?;
+    // If the connection is already open this session, skip reopening — saves
+    // a network roundtrip on every boot resume after the first.
+    {
+        let conn_guard = state.conn.lock().await;
+        if conn_guard.is_some() {
+            return Ok(());
+        }
+    }
+
+    let creds: TursoCreds = credentials::require_via(&state).await?;
     let (database, conn) = db::open_local_replica(&creds).await?;
     // Defensive: ensure migrations are applied against the connection codo
     // will use. Idempotent (run_migrations checks schema_version).
