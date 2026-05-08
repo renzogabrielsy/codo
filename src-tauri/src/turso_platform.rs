@@ -49,9 +49,14 @@ pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
     //    "personal" org by default; named orgs require an explicit slug.
     let org_slug = pick_org(&client, &token).await?;
 
-    // 2. Create the database (auto-suffix on name collision).
+    // 2. Resolve the group to put the database in. New free-tier accounts
+    //    don't always have a group called "default" — list what's there and
+    //    pick one (creating "default" at a sensible location if none exist).
+    let group = resolve_group(&client, &token, &org_slug).await?;
+
+    // 3. Create the database (auto-suffix on name collision).
     let create_resp =
-        create_database_with_retry(&client, &token, &org_slug, &req.db_name).await?;
+        create_database_with_retry(&client, &token, &org_slug, &group, &req.db_name).await?;
     let final_db_name = create_resp.name;
     // Turso's create-DB response carries the canonical `Hostname` for the
     // libSQL endpoint. Fall back to the org-slug-derived form if the API
@@ -60,7 +65,7 @@ pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
         .hostname
         .unwrap_or_else(|| format!("{final_db_name}-{org_slug}.turso.io"));
 
-    // 3. Mint a database-level auth token.
+    // 4. Mint a database-level auth token.
     let db_token = mint_db_token(&client, &token, &org_slug, &final_db_name).await?;
 
     let db_url = format!("libsql://{hostname}");
@@ -209,6 +214,135 @@ fn decode_err(label: &'static str, e: serde_json::Error, body: &str) -> CodoErro
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Group resolution. Turso databases must live inside a "group" within an
+// organization. The Free / Starter plan ships with one auto-created group on
+// older accounts but newer signups don't always have one named "default" —
+// hence the 400 'group not found' if we hardcode it.
+//
+// Strategy:
+//   1. List groups for the org.
+//   2. If any exist, prefer one named 'default', else use the first.
+//   3. If none exist, create 'default' at a sensible location (`sin` is the
+//      Singapore region, closest to Cebu; falls back to Turso's first
+//      available location if 'sin' isn't enabled on this account).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct Group {
+    name: String,
+}
+
+async fn resolve_group(
+    client: &reqwest::Client,
+    token: &str,
+    org_slug: &str,
+) -> Result<String> {
+    // List existing groups.
+    let resp = client
+        .get(format!("{API_BASE}/organizations/{org_slug}/groups"))
+        .bearer_auth(token)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(CodoError::TursoApi {
+            status: status.as_u16(),
+            body: text,
+        });
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        CodoError::internal(format!(
+            "Turso /groups returned non-JSON: {e}\nbody={text}"
+        ))
+    })?;
+    let groups: Vec<Group> = if parsed.is_array() {
+        serde_json::from_value(parsed).map_err(|e| decode_err("groups[bare]", e, &text))?
+    } else if let Some(arr) = parsed.get("groups") {
+        serde_json::from_value(arr.clone()).map_err(|e| decode_err("groups[wrapped]", e, &text))?
+    } else {
+        return Err(CodoError::internal(format!(
+            "Turso /groups returned an unrecognized shape — \
+             expected an array or {{\"groups\":[…]}}.\nbody={text}"
+        )));
+    };
+
+    if !groups.is_empty() {
+        let chosen = groups
+            .iter()
+            .find(|g| g.name == "default")
+            .or_else(|| groups.first())
+            .expect("non-empty");
+        return Ok(chosen.name.clone());
+    }
+
+    // No groups — create one. Pick a location. `sin` (Singapore) is closest
+    // to Cebu/Davao; if it's not allowed for this account we fall back to
+    // whatever Turso's /locations endpoint says is available.
+    let location = pick_location(client, token).await.unwrap_or_else(|_| "sin".to_string());
+    create_group(client, token, org_slug, "default", &location).await?;
+    Ok("default".to_string())
+}
+
+#[derive(Debug, Serialize)]
+struct CreateGroupBody<'a> {
+    name: &'a str,
+    location: &'a str,
+}
+
+async fn create_group(
+    client: &reqwest::Client,
+    token: &str,
+    org_slug: &str,
+    name: &str,
+    location: &str,
+) -> Result<()> {
+    let resp = client
+        .post(format!("{API_BASE}/organizations/{org_slug}/groups"))
+        .bearer_auth(token)
+        .header("Accept", "application/json")
+        .json(&CreateGroupBody { name, location })
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(CodoError::TursoApi {
+            status: status.as_u16(),
+            body: format!("{text} (creating group '{name}' at '{location}')"),
+        });
+    }
+    Ok(())
+}
+
+async fn pick_location(client: &reqwest::Client, token: &str) -> Result<String> {
+    let resp = client
+        .get(format!("{API_BASE}/locations"))
+        .bearer_auth(token)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(CodoError::invalid("could not list Turso locations"));
+    }
+    let text = resp.text().await.unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| CodoError::internal(format!("Turso /locations non-JSON: {e}\n{text}")))?;
+    // /locations returns { "locations": { "sin": "Singapore", "lax": "...", ... } }
+    // Prefer 'sin' (closest to Cebu/Davao), fallback to whatever's first.
+    if let Some(map) = parsed.get("locations").and_then(|v| v.as_object()) {
+        if map.contains_key("sin") {
+            return Ok("sin".to_string());
+        }
+        if let Some(first_key) = map.keys().next() {
+            return Ok(first_key.clone());
+        }
+    }
+    Err(CodoError::invalid("no Turso locations available"))
+}
+
 #[derive(Debug, Serialize)]
 struct CreateDbBody<'a> {
     name: &'a str,
@@ -225,9 +359,10 @@ async fn create_database_with_retry(
     client: &reqwest::Client,
     token: &str,
     org_slug: &str,
+    group: &str,
     desired_name: &str,
 ) -> Result<CreatedDatabase> {
-    match create_database(client, token, org_slug, desired_name).await {
+    match create_database(client, token, org_slug, group, desired_name).await {
         Ok(mut info) => {
             info.name = desired_name.to_string();
             Ok(info)
@@ -236,7 +371,7 @@ async fn create_database_with_retry(
             // On the (rare) collision case, suffix and retry once.
             let suffix = chrono::Utc::now().timestamp_millis();
             let suffixed = format!("{desired_name}-{suffix}");
-            match create_database(client, token, org_slug, &suffixed).await {
+            match create_database(client, token, org_slug, group, &suffixed).await {
                 Ok(mut info) => {
                     info.name = suffixed;
                     Ok(info)
@@ -245,7 +380,7 @@ async fn create_database_with_retry(
                     // Surface the original error since it's usually the more
                     // informative one (auth failure, quota, etc.).
                     Err(CodoError::internal(format!(
-                        "create_database failed twice.\n\
+                        "create_database failed twice (group={group}).\n\
                          first attempt ({desired_name}): {first_err}\n\
                          retry ({suffixed}): {retry_err}"
                     )))
@@ -259,6 +394,7 @@ async fn create_database(
     client: &reqwest::Client,
     token: &str,
     org_slug: &str,
+    group: &str,
     db_name: &str,
 ) -> Result<CreatedDatabase> {
     let resp = client
@@ -267,7 +403,7 @@ async fn create_database(
         .header("Accept", "application/json")
         .json(&CreateDbBody {
             name: db_name,
-            group: "default",
+            group,
         })
         .send()
         .await?;
