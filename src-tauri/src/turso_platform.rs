@@ -45,14 +45,20 @@ pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
     let org_slug = pick_org(&client, &req.platform_token).await?;
 
     // 2. Create the database (auto-suffix on name collision).
-    let final_db_name = create_database_with_retry(&client, &req.platform_token, &org_slug, &req.db_name).await?;
+    let create_resp =
+        create_database_with_retry(&client, &req.platform_token, &org_slug, &req.db_name).await?;
+    let final_db_name = create_resp.name;
+    // Turso's create-DB response carries the canonical `Hostname` for the
+    // libSQL endpoint. Fall back to the org-slug-derived form if the API
+    // didn't include it.
+    let hostname = create_resp
+        .hostname
+        .unwrap_or_else(|| format!("{final_db_name}-{org_slug}.turso.io"));
 
     // 3. Mint a database-level auth token.
     let db_token = mint_db_token(&client, &req.platform_token, &org_slug, &final_db_name).await?;
 
-    // 4. Resolve the libSQL URL. Turso's create-DB response carries `Hostname`;
-    //    libSQL uses the `libsql://` scheme.
-    let db_url = format!("libsql://{final_db_name}-{org_slug}.turso.io");
+    let db_url = format!("libsql://{hostname}");
 
     Ok(OnboardingResult {
         creds: TursoCreds {
@@ -64,15 +70,37 @@ pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
     })
 }
 
-#[derive(Debug, Deserialize)]
-struct OrgListResponse {
-    organizations: Vec<Organization>,
+// ---------------------------------------------------------------------------
+// Robust JSON helpers — read the body as text first so that on a parse failure
+// we can surface what the API actually returned. Without this, reqwest's
+// `error decoding response body` is opaque.
+// ---------------------------------------------------------------------------
+
+async fn parse_json_body<T: for<'de> Deserialize<'de>>(
+    label: &'static str,
+    resp: reqwest::Response,
+) -> Result<T> {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(CodoError::TursoApi {
+            status: status.as_u16(),
+            body: text,
+        });
+    }
+    serde_json::from_str::<T>(&text).map_err(|e| {
+        CodoError::internal(format!(
+            "Turso API ({label}) returned a body codo couldn't decode: {e}\n\
+             status={status}\n\
+             body={text}"
+        ))
+    })
 }
 
 #[derive(Debug, Deserialize)]
 struct Organization {
     slug: String,
-    #[serde(rename = "type", default)]
+    #[serde(default, rename = "type")]
     org_type: String,
 }
 
@@ -80,32 +108,59 @@ async fn pick_org(client: &reqwest::Client, token: &str) -> Result<String> {
     let resp = client
         .get(format!("{API_BASE}/organizations"))
         .bearer_auth(token)
+        .header("Accept", "application/json")
         .send()
         .await?;
     let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
         return Err(CodoError::TursoApi {
             status: status.as_u16(),
-            body,
+            body: text,
         });
     }
-    let listing: OrgListResponse = resp.json().await?;
-    if listing.organizations.is_empty() {
+
+    // Turso's API has shipped at least two response shapes here over time:
+    //   - bare array:    [{"slug":"…","type":"personal"}, …]
+    //   - wrapped:       {"organizations":[…]}
+    // Accept either; surface the raw body if neither matches.
+    let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        CodoError::internal(format!(
+            "Turso /organizations returned non-JSON: {e}\n\
+             status={status}\n\
+             body={text}"
+        ))
+    })?;
+
+    let orgs: Vec<Organization> = if parsed.is_array() {
+        serde_json::from_value(parsed).map_err(|e| decode_err("orgs[bare]", e, &text))?
+    } else if let Some(arr) = parsed.get("organizations") {
+        serde_json::from_value(arr.clone()).map_err(|e| decode_err("orgs[wrapped]", e, &text))?
+    } else {
+        return Err(CodoError::internal(format!(
+            "Turso /organizations returned an unrecognized shape — \
+             expected an array or {{\"organizations\":[…]}}.\n\
+             body={text}"
+        )));
+    };
+
+    if orgs.is_empty() {
         return Err(CodoError::invalid(
             "no Turso organizations available for this token",
         ));
     }
-    // Prefer "personal" org if present, else the first listed. Multi-org
-    // selection is a future-Renzo problem (only matters if he creates a
-    // company workspace later).
-    let chosen = listing
-        .organizations
+    let chosen = orgs
         .iter()
         .find(|o| o.org_type == "personal")
-        .or_else(|| listing.organizations.first())
+        .or_else(|| orgs.first())
         .expect("non-empty list");
     Ok(chosen.slug.clone())
+}
+
+fn decode_err(label: &'static str, e: serde_json::Error, body: &str) -> CodoError {
+    CodoError::internal(format!(
+        "Turso decode failure ({label}): {e}\nbody={body}"
+    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -114,22 +169,44 @@ struct CreateDbBody<'a> {
     group: &'a str,
 }
 
+#[derive(Debug, Default)]
+struct CreatedDatabase {
+    name: String,
+    hostname: Option<String>,
+}
+
 async fn create_database_with_retry(
     client: &reqwest::Client,
     token: &str,
     org_slug: &str,
     desired_name: &str,
-) -> Result<String> {
-    // First attempt with the desired name.
-    if create_database(client, token, org_slug, desired_name).await.is_ok() {
-        return Ok(desired_name.to_string());
+) -> Result<CreatedDatabase> {
+    match create_database(client, token, org_slug, desired_name).await {
+        Ok(mut info) => {
+            info.name = desired_name.to_string();
+            Ok(info)
+        }
+        Err(first_err) => {
+            // On the (rare) collision case, suffix and retry once.
+            let suffix = chrono::Utc::now().timestamp_millis();
+            let suffixed = format!("{desired_name}-{suffix}");
+            match create_database(client, token, org_slug, &suffixed).await {
+                Ok(mut info) => {
+                    info.name = suffixed;
+                    Ok(info)
+                }
+                Err(retry_err) => {
+                    // Surface the original error since it's usually the more
+                    // informative one (auth failure, quota, etc.).
+                    Err(CodoError::internal(format!(
+                        "create_database failed twice.\n\
+                         first attempt ({desired_name}): {first_err}\n\
+                         retry ({suffixed}): {retry_err}"
+                    )))
+                }
+            }
+        }
     }
-    // On collision, try one suffixed variant (millis-since-epoch keeps it
-    // short and unique). Renzo only triggers this on a re-onboard scenario.
-    let suffix = chrono::Utc::now().timestamp_millis();
-    let suffixed = format!("{desired_name}-{suffix}");
-    create_database(client, token, org_slug, &suffixed).await?;
-    Ok(suffixed)
 }
 
 async fn create_database(
@@ -137,10 +214,11 @@ async fn create_database(
     token: &str,
     org_slug: &str,
     db_name: &str,
-) -> Result<()> {
+) -> Result<CreatedDatabase> {
     let resp = client
         .post(format!("{API_BASE}/organizations/{org_slug}/databases"))
         .bearer_auth(token)
+        .header("Accept", "application/json")
         .json(&CreateDbBody {
             name: db_name,
             group: "default",
@@ -148,14 +226,29 @@ async fn create_database(
         .send()
         .await?;
     let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
         return Err(CodoError::TursoApi {
             status: status.as_u16(),
-            body,
+            body: text,
         });
     }
-    Ok(())
+
+    // Try to extract Hostname from a few known response shapes:
+    //   {"database":{"Hostname":"…","Name":"…", …}}      (older docs)
+    //   {"Hostname":"…","Name":"…"}                       (flat)
+    //   {"database":{"hostname":"…","name":"…"}}          (lowercase variant)
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let inner = v.get("database").unwrap_or(&v);
+    let hostname = inner
+        .get("Hostname")
+        .or_else(|| inner.get("hostname"))
+        .and_then(|h| h.as_str())
+        .map(|s| s.to_string());
+    Ok(CreatedDatabase {
+        name: db_name.to_string(),
+        hostname,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,16 +268,9 @@ async fn mint_db_token(
     let resp = client
         .post(url)
         .bearer_auth(platform_token)
+        .header("Accept", "application/json")
         .send()
         .await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(CodoError::TursoApi {
-            status: status.as_u16(),
-            body,
-        });
-    }
-    let tok: TokenResponse = resp.json().await?;
+    let tok: TokenResponse = parse_json_body("mint_db_token", resp).await?;
     Ok(tok.jwt)
 }
