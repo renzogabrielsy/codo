@@ -17,19 +17,20 @@
     if (row.disposition_kind === 'flec_bagging') return 'FLEC';
     return row.partner_equipment_code ?? '?';
   }
-  /** Disposition pill colour by kind — emerald FLEC / sky Crusher / amber Kiln. */
+  /** Disposition pill colour by kind — emerald FLEC / sky Crusher / amber Kiln.
+   *  Tuned for both light + dark modes. */
   export function dispositionBadgeClass(row: { disposition_kind: string }): string {
     const base =
-      'inline-block rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider';
+      'inline-block rounded px-1.5 py-0.5 text-[11px] font-bold tracking-wider border';
     switch (row.disposition_kind) {
       case 'flec_bagging':
-        return `${base} bg-emerald-700/40 text-emerald-200 border border-emerald-600/40`;
+        return `${base} bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-700/40 dark:text-emerald-200 dark:border-emerald-600/40`;
       case 'partner_crusher':
-        return `${base} bg-sky-700/40 text-sky-200 border border-sky-600/40`;
+        return `${base} bg-sky-100 text-sky-800 border-sky-300 dark:bg-sky-700/40 dark:text-sky-200 dark:border-sky-600/40`;
       case 'partner_kiln':
-        return `${base} bg-amber-700/40 text-amber-200 border border-amber-600/40`;
+        return `${base} bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-700/40 dark:text-amber-200 dark:border-amber-600/40`;
       default:
-        return `${base} bg-neutral-700/40 text-neutral-200`;
+        return `${base} bg-neutral-100 text-neutral-800 dark:bg-neutral-700/40 dark:text-neutral-200`;
     }
   }
   /** Defensive trim: Svelte's bind:value on <input type="number"> hands us a
@@ -50,25 +51,25 @@
   export function rowTintByKind(kind: string): string {
     switch (kind) {
       case 'flec_bagging':
-        return 'bg-emerald-950/30';
+        return 'bg-emerald-50/80 dark:bg-emerald-950/30';
       case 'partner_crusher':
       case 'partner_kiln':
-        return 'bg-purple-950/30';
+        return 'bg-purple-50/80 dark:bg-purple-950/30';
       default:
         return '';
     }
   }
   export function rowTintByRaw(raw: unknown): string {
     const u = trimStr(raw).toUpperCase();
-    if (u === 'FLEC') return 'bg-emerald-950/30';
-    if (/^(C[1-4]|RK[1-4])$/.test(u)) return 'bg-purple-950/30';
+    if (u === 'FLEC') return 'bg-emerald-100 dark:bg-emerald-950/30';
+    if (/^(C[1-4]|RK[1-4])$/.test(u)) return 'bg-purple-100 dark:bg-purple-950/30';
     return '';
   }
   export function draftBorderByRaw(raw: unknown): string {
     const u = trimStr(raw).toUpperCase();
-    if (u === 'FLEC') return 'border-emerald-700/40';
-    if (/^(C[1-4]|RK[1-4])$/.test(u)) return 'border-purple-700/40';
-    return 'border-neutral-700/40';
+    if (u === 'FLEC') return 'border-emerald-400 dark:border-emerald-700/40';
+    if (/^(C[1-4]|RK[1-4])$/.test(u)) return 'border-purple-400 dark:border-purple-700/40';
+    return 'border-neutral-300 dark:border-neutral-700/40';
   }
 
   // -------------------------------------------------------------------------
@@ -440,16 +441,18 @@
   }
 </script>
 
-<div class="rounded-md border border-neutral-800 bg-neutral-950 overflow-hidden">
-  <div class="flex items-baseline justify-between px-3 py-1.5 border-b border-neutral-800">
-    <h3 class="text-xs uppercase tracking-wide text-neutral-500">Production log</h3>
-    <div class="flex items-center gap-3 text-xs text-neutral-600 font-mono">
+<div class="rounded-md border border-neutral-300 bg-white dark:border-neutral-800 dark:bg-neutral-950 overflow-hidden">
+  <div class="flex items-baseline justify-between px-3 py-1.5 border-b border-neutral-300 dark:border-neutral-800">
+    <h3 class="text-xs uppercase tracking-wide font-semibold text-neutral-700 dark:text-neutral-400">
+      Production log
+    </h3>
+    <div class="flex items-center gap-3 text-xs font-mono text-neutral-600 dark:text-neutral-500">
       <span>history: {rows.length}</span>
-      <span>·</span>
-      <span class="text-emerald-400">drafts: {drafts.length}</span>
+      <span class="text-neutral-400 dark:text-neutral-700">·</span>
+      <span class="text-emerald-700 dark:text-emerald-400">drafts: {drafts.length}</span>
       <button
         type="button"
-        class="rounded border border-neutral-800 hover:border-neutral-700 px-2 py-0.5 text-neutral-400 hover:text-neutral-200"
+        class="rounded border border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-0.5 text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
         onclick={() => (bulkOpen = !bulkOpen)}
       >
         {bulkOpen ? 'close bulk' : 'bulk paste'}
@@ -458,13 +461,13 @@
   </div>
 
   {#if topErr}
-    <div class="px-3 py-2 text-xs text-red-100 bg-red-900/60 border-b border-red-700 font-mono">
+    <div class="px-3 py-2 text-sm font-mono font-medium text-red-800 bg-red-100 border-b border-red-300 dark:text-red-100 dark:bg-red-900/60 dark:border-red-700">
       ⚠ {topErr}
     </div>
   {/if}
 
   <div class="overflow-x-auto">
-    <table class="w-full text-xs font-mono">
+    <table class="w-full text-sm font-mono">
       <colgroup>
         <col style="width: 24px" /><!-- + indicator -->
         <col style="width: 64px" /><!-- RECV -->
@@ -482,34 +485,41 @@
         <col /><!-- NOTES (flex) -->
         <col style="width: 36px" /><!-- × button -->
       </colgroup>
-      <thead class="bg-neutral-900 text-neutral-300 text-[11px] uppercase tracking-wider">
+      <thead class="bg-neutral-100 text-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 text-[12px] uppercase tracking-wider">
         <tr>
           <th></th>
-          <th class="px-2 py-1.5 text-left font-medium">Recv</th>
-          <th class="px-2 py-1.5 text-left font-medium">Prod</th>
-          <th class="px-2 py-1.5 text-left font-medium">Batch</th>
-          <th class="px-2 py-1.5 text-left font-medium">Shift</th>
-          <th class="px-2 py-1.5 text-left font-medium">Grade</th>
-          <th class="px-2 py-1.5 text-left font-medium">Source</th>
-          <th class="px-2 py-1.5 text-left font-medium">Plant</th>
-          <th class="px-2 py-1.5 text-left font-medium">Warehouse</th>
-          <th class="px-2 py-1.5 text-left font-medium">Side</th>
-          <th class="px-2 py-1.5 text-right font-medium">Weight kg</th>
-          <th class="px-2 py-1.5 text-right font-medium">Flec</th>
-          <th class="px-2 py-1.5 text-left font-medium">Dest</th>
-          <th class="px-2 py-1.5 text-left font-medium">Notes</th>
+          <th class="px-2 py-2 text-left font-semibold">Recv</th>
+          <th class="px-2 py-2 text-left font-semibold">Prod</th>
+          <th class="px-2 py-2 text-left font-semibold">Batch</th>
+          <th class="px-2 py-2 text-left font-semibold">Shift</th>
+          <th class="px-2 py-2 text-left font-semibold">Grade</th>
+          <th class="px-2 py-2 text-left font-semibold">Source</th>
+          <th class="px-2 py-2 text-left font-semibold">Plant</th>
+          <th class="px-2 py-2 text-left font-semibold">Warehouse</th>
+          <th class="px-2 py-2 text-left font-semibold">Side</th>
+          <th class="px-2 py-2 text-right font-semibold">Weight kg</th>
+          <th class="px-2 py-2 text-right font-semibold">Flec</th>
+          <th class="px-2 py-2 text-left font-semibold">Dest</th>
+          <th class="px-2 py-2 text-left font-semibold">Notes</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         <!-- DRAFT ROWS (editable). The operator can stage many. -->
         {#each drafts as draft, di (draft.id)}
-          {@const tint = draft.rowError ? 'bg-red-950/40' : rowTintByRaw(draft.dispositionRaw)}
+          {@const tint = draft.rowError
+            ? 'bg-red-100 dark:bg-red-950/40'
+            : rowTintByRaw(draft.dispositionRaw)}
           {@const border = draft.rowError
-            ? 'border-red-500/60'
+            ? 'border-red-500'
             : draftBorderByRaw(draft.dispositionRaw)}
           <tr class="border-y-2 {border} {tint}">
-            <td class="px-1 text-center font-bold {draft.rowError ? 'text-red-400' : 'text-emerald-400'}" title="draft row">
+            <td
+              class="px-1 text-center font-bold {draft.rowError
+                ? 'text-red-600 dark:text-red-400'
+                : 'text-emerald-700 dark:text-emerald-400'}"
+              title="draft row"
+            >
               +
             </td>
             <td class="px-1 py-1">
@@ -536,7 +546,7 @@
                 bind:value={draft.batch}
                 onkeydown={onCellKey}
                 placeholder="MAY"
-                class="cell-input uppercase text-neutral-100"
+                class="cell-input uppercase font-semibold text-neutral-900 dark:text-neutral-100"
               />
             </td>
             <td class="px-1 py-1">
@@ -556,7 +566,7 @@
                 onkeydown={onCellKey}
                 list="dl-grades"
                 placeholder="3X50"
-                class="cell-input uppercase text-violet-300"
+                class="cell-input uppercase text-violet-700 dark:text-violet-300"
               />
             </td>
             <td class="px-1 py-1">
@@ -566,7 +576,7 @@
                 onkeydown={onCellKey}
                 list="dl-sources"
                 placeholder="TNK 1"
-                class="cell-input uppercase text-cyan-300"
+                class="cell-input uppercase text-cyan-700 dark:text-cyan-300"
               />
             </td>
             <td class="px-1 py-1">
@@ -577,7 +587,7 @@
                   readonly
                   tabindex="-1"
                   title="auto from source"
-                  class="cell-input text-neutral-500 cursor-default italic"
+                  class="cell-input italic cursor-default text-neutral-500 dark:text-neutral-500"
                 />
               {:else}
                 <input
@@ -597,7 +607,7 @@
                 onkeydown={onCellKey}
                 list="dl-warehouses"
                 placeholder="—"
-                class="cell-input uppercase text-amber-300"
+                class="cell-input uppercase text-amber-700 dark:text-amber-300"
               />
             </td>
             <td class="px-1 py-1">
@@ -618,7 +628,7 @@
                 step="0.01"
                 min="0"
                 placeholder="0"
-                class="cell-input text-right text-neutral-50 font-semibold"
+                class="cell-input text-right font-semibold text-neutral-900 dark:text-neutral-50"
               />
             </td>
             <td class="px-1 py-1">
@@ -639,7 +649,7 @@
                 onkeydown={onCellKey}
                 list="dl-disposition"
                 placeholder="FLEC"
-                class="cell-input uppercase text-pink-300"
+                class="cell-input uppercase text-pink-700 dark:text-pink-300"
               />
             </td>
             <td class="px-1 py-1">
@@ -656,14 +666,17 @@
                 type="button"
                 onclick={() => removeRow(draft.id)}
                 title="remove this draft row"
-                class="text-neutral-500 hover:text-red-400 text-base leading-none"
+                class="text-base leading-none text-neutral-500 hover:text-red-600 dark:hover:text-red-400"
               >×</button>
             </td>
           </tr>
           {#if draft.rowError}
-            <tr class="bg-red-950/40">
+            <tr class="bg-red-100 dark:bg-red-950/40">
               <td></td>
-              <td colspan="14" class="px-3 py-1 text-[11px] text-red-300 font-mono">
+              <td
+                colspan="14"
+                class="px-3 py-1 text-[12px] font-mono text-red-700 dark:text-red-300"
+              >
                 ⚠ row {di + 1}: {draft.rowError}
               </td>
             </tr>
@@ -671,34 +684,34 @@
         {/each}
 
         <!-- DRAFTS ACTION ROW: + Add row | Submit all | Clear -->
-        <tr class="bg-neutral-900/70 border-y border-neutral-800">
+        <tr class="bg-neutral-100 dark:bg-neutral-900/70 border-y border-neutral-300 dark:border-neutral-800">
           <td colspan="15" class="px-3 py-2">
             <div class="flex items-center gap-2">
               <button
                 type="button"
                 onclick={addRow}
-                class="rounded border border-emerald-700/40 hover:border-emerald-500 px-2 py-1 text-xs text-emerald-300 hover:text-emerald-100 font-medium"
+                class="rounded border border-emerald-500/60 hover:border-emerald-600 dark:border-emerald-700/40 dark:hover:border-emerald-500 px-2 py-1 text-sm font-medium text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/40 dark:hover:text-emerald-100"
               >
                 + Add row
               </button>
               <button
                 type="button"
                 onclick={clearAllDrafts}
-                class="rounded border border-neutral-800 hover:border-neutral-700 px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200"
+                class="rounded border border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-1 text-sm text-neutral-700 hover:bg-neutral-50 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
               >
                 Clear drafts
               </button>
-              <span class="text-xs text-neutral-600 font-mono">
-                <kbd class="px-1 bg-neutral-800 rounded">↵</kbd> submit all
-                · <kbd class="px-1 bg-neutral-800 rounded">esc</kbd> clear
-                · <kbd class="px-1 bg-neutral-800 rounded">tab</kbd> next cell
+              <span class="text-xs font-mono text-neutral-500 dark:text-neutral-600">
+                <kbd class="px-1 rounded bg-neutral-200 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200">↵</kbd> submit all
+                · <kbd class="px-1 rounded bg-neutral-200 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200">esc</kbd> clear
+                · <kbd class="px-1 rounded bg-neutral-200 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200">tab</kbd> next cell
               </span>
               <div class="flex-1"></div>
               <button
                 type="button"
                 onclick={submitAll}
                 disabled={submitting}
-                class="rounded bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-neutral-950 font-semibold px-4 py-1.5 text-xs disabled:opacity-50 transition"
+                class="rounded bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-400 dark:active:bg-emerald-600 text-white dark:text-neutral-950 font-semibold px-4 py-1.5 text-sm disabled:opacity-50 transition"
               >
                 {submitting ? 'saving…' : `Submit all (${drafts.length})`}
               </button>
@@ -707,42 +720,50 @@
         </tr>
 
         <!-- HISTORY: saved, immutable rows below the drafts. -->
-        <tr class="bg-neutral-900 text-neutral-500 text-[10px] uppercase tracking-wider">
-          <td colspan="15" class="px-3 py-1">
+        <tr class="bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-500 text-[11px] uppercase tracking-wider font-semibold">
+          <td colspan="15" class="px-3 py-1.5">
             ── History (last {rows.length}) ──
           </td>
         </tr>
         {#if rows.length === 0}
           <tr>
-            <td colspan="15" class="px-3 py-4 text-center text-neutral-600 italic">
+            <td colspan="15" class="px-3 py-4 text-center italic text-neutral-500 dark:text-neutral-600">
               no saved events yet
             </td>
           </tr>
         {:else}
           {#each rows as row (row.id)}
             <tr
-              class="border-t border-neutral-900 hover:bg-neutral-900/40 text-neutral-300 {rowTintByKind(
+              class="border-t border-neutral-200 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/40 text-neutral-800 dark:text-neutral-300 {rowTintByKind(
                 row.disposition_kind
               )}"
             >
               <td></td>
-              <td class="px-2 py-1 text-neutral-200">{fmtDate(row.recv_date)}</td>
-              <td class="px-2 py-1 text-neutral-500">{fmtDate(row.prod_date)}</td>
-              <td class="px-2 py-1 text-neutral-300">{row.batch}</td>
-              <td class="px-2 py-1 text-neutral-300">{row.shift_code ?? ''}</td>
-              <td class="px-2 py-1 text-violet-300">{row.grade_code}</td>
-              <td class="px-2 py-1 text-cyan-300">{row.source_code}</td>
-              <td class="px-2 py-1 text-neutral-500 italic">{row.plant_code ?? ''}</td>
-              <td class="px-2 py-1 text-amber-300">{row.warehouse_code ?? ''}</td>
-              <td class="px-2 py-1">{row.whse_side ?? ''}</td>
-              <td class="px-2 py-1 text-right text-neutral-100 font-semibold">
+              <td class="px-2 py-1.5 text-neutral-900 dark:text-neutral-200">
+                {fmtDate(row.recv_date)}
+              </td>
+              <td class="px-2 py-1.5 text-neutral-500">{fmtDate(row.prod_date)}</td>
+              <td class="px-2 py-1.5 text-neutral-800 dark:text-neutral-300">{row.batch}</td>
+              <td class="px-2 py-1.5 text-neutral-800 dark:text-neutral-300">
+                {row.shift_code ?? ''}
+              </td>
+              <td class="px-2 py-1.5 text-violet-700 dark:text-violet-300">{row.grade_code}</td>
+              <td class="px-2 py-1.5 text-cyan-700 dark:text-cyan-300">{row.source_code}</td>
+              <td class="px-2 py-1.5 italic text-neutral-500">{row.plant_code ?? ''}</td>
+              <td class="px-2 py-1.5 text-amber-700 dark:text-amber-300">
+                {row.warehouse_code ?? ''}
+              </td>
+              <td class="px-2 py-1.5">{row.whse_side ?? ''}</td>
+              <td class="px-2 py-1.5 text-right font-semibold text-neutral-900 dark:text-neutral-100">
                 {fmtKg(row.weight_kg)}
               </td>
-              <td class="px-2 py-1 text-right text-neutral-300">{row.flec_count ?? ''}</td>
-              <td class="px-2 py-1">
+              <td class="px-2 py-1.5 text-right text-neutral-700 dark:text-neutral-300">
+                {row.flec_count ?? ''}
+              </td>
+              <td class="px-2 py-1.5">
                 <span class={dispositionBadgeClass(row)}>{disp(row)}</span>
               </td>
-              <td class="px-2 py-1 text-neutral-500 truncate" title={row.notes ?? ''}>
+              <td class="px-2 py-1.5 truncate text-neutral-600 dark:text-neutral-500" title={row.notes ?? ''}>
                 {row.notes ?? ''}
               </td>
               <td></td>
@@ -782,8 +803,8 @@
 
   <!-- Bulk paste panel -->
   {#if bulkOpen}
-    <div class="px-3 py-3 border-t border-neutral-800 space-y-2 bg-neutral-900/40">
-      <div class="text-xs text-neutral-500 font-mono">
+    <div class="px-3 py-3 space-y-2 border-t border-neutral-300 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/40">
+      <div class="text-xs font-mono text-neutral-700 dark:text-neutral-500">
         Paste rows from Excel/Sheets (TSV) or comma-separated. Header row optional.
         Column order: RECV, PROD, BATCH, SH, GRD, SRC, PLT, WHSE, SD, WT, FLEC, DISP, NOTES.
       </div>
@@ -791,21 +812,21 @@
         bind:value={bulkText}
         rows="6"
         placeholder={'5/8\t5/8\tMAY\tM\t3X50\tTNK 1\tW6\tWHSE 7\tRS\t14000\t30\tFLEC\t\n5/8\t5/8\tMAY\tM\t3X50\tTNK 2\tW6\tWHSE 7\tRS\t12500\t28\tFLEC\t'}
-        class="w-full rounded bg-neutral-950 border border-neutral-800 p-2 text-xs font-mono"
+        class="w-full rounded border border-neutral-300 bg-white p-2 text-sm font-mono text-neutral-900 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
       ></textarea>
       {#if bulkErr}
-        <pre class="text-xs text-red-300 whitespace-pre-wrap font-mono">{bulkErr}</pre>
+        <pre class="text-sm font-mono text-red-700 whitespace-pre-wrap dark:text-red-300">{bulkErr}</pre>
       {/if}
       <div class="flex items-center gap-2">
         <button
           type="button"
           onclick={submitBulk}
           disabled={bulkBusy}
-          class="rounded bg-emerald-700 hover:bg-emerald-600 px-3 py-1 text-xs font-medium disabled:opacity-50"
+          class="rounded bg-emerald-600 hover:bg-emerald-500 dark:bg-emerald-700 dark:hover:bg-emerald-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
         >
           {bulkBusy ? 'inserting…' : 'Submit all'}
         </button>
-        <span class="text-xs text-neutral-600 font-mono">
+        <span class="text-xs font-mono text-neutral-600 dark:text-neutral-600">
           all rows insert in one transaction
         </span>
       </div>
@@ -814,22 +835,36 @@
 </div>
 
 <style>
+  /* Cell-shaped input that fills its td and blends into the table. Both
+     light + dark colors so the same component reads in either mode. */
   :global(.cell-input) {
     width: 100%;
     background: transparent;
     border: 1px solid transparent;
-    color: rgb(229 229 229);
-    padding: 0.25rem 0.5rem;
+    color: rgb(23 23 23);
+    padding: 0.3rem 0.5rem;
     font-family: inherit;
     font-size: inherit;
-    border-radius: 2px;
+    border-radius: 3px;
     outline: none;
   }
+  :global(.dark .cell-input) {
+    color: rgb(229 229 229);
+  }
   :global(.cell-input:focus) {
+    background: rgb(255 255 255);
+    border-color: rgb(16 185 129);
+    box-shadow: 0 0 0 2px rgb(16 185 129 / 0.2);
+  }
+  :global(.dark .cell-input:focus) {
     background: rgb(10 10 10);
-    border-color: rgb(34 197 94 / 0.5);
+    border-color: rgb(34 197 94 / 0.6);
+    box-shadow: 0 0 0 2px rgb(34 197 94 / 0.15);
   }
   :global(.cell-input::placeholder) {
+    color: rgb(163 163 163);
+  }
+  :global(.dark .cell-input::placeholder) {
     color: rgb(82 82 82);
   }
   :global(.cell-input[type='date']::-webkit-calendar-picker-indicator) {

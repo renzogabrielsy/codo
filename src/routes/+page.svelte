@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, getContext } from 'svelte';
+  import type { Writable } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
@@ -19,10 +20,21 @@
 
   let state: BootState = $state({ kind: 'loading', step: 'starting…' });
 
+  // Theme is owned by +layout.svelte; we just read + flip it.
+  const theme = getContext<Writable<'dark' | 'light'>>('codo-theme');
+  let isDark = $state(true);
+  $effect(() => {
+    if (!theme) return;
+    return theme.subscribe((t) => {
+      isDark = t === 'dark';
+    });
+  });
+  function toggleTheme() {
+    if (!theme) return;
+    theme.update((t) => (t === 'dark' ? 'light' : 'dark'));
+  }
+
   async function refresh() {
-    // Resume-friendly boot: every step is idempotent so codo recovers from
-    // any partial-onboarding state (creds in keyring but migrations not run,
-    // etc.).
     state = { kind: 'loading', step: 'starting…' };
     try {
       state = { kind: 'loading', step: 'checking onboarding…' };
@@ -57,7 +69,6 @@
   }
 
   function handleSaved(newRows: ProductionEventRow[]) {
-    // Optimistic prepend; refreshRecent in the background will re-pull.
     if (state.kind !== 'ready') return;
     state = { ...state, recent: [...newRows, ...state.recent].slice(0, 20) };
     refreshRecent();
@@ -69,13 +80,13 @@
 {#if state.kind === 'loading'}
   <main class="min-h-screen w-full flex flex-col items-center justify-center gap-3 px-6 py-12">
     <h1 class="text-3xl font-bold tracking-tight">codo</h1>
-    <p class="text-neutral-400 font-mono text-sm">{state.step}</p>
+    <p class="font-mono text-sm text-neutral-600 dark:text-neutral-400">{state.step}</p>
   </main>
 {:else if state.kind === 'needs_onboarding'}
   <main class="min-h-screen w-full flex flex-col items-center justify-center gap-6 px-6 py-12">
     <header class="text-center">
       <h1 class="text-4xl font-bold tracking-tight">codo</h1>
-      <p class="mt-2 text-sm text-neutral-400">
+      <p class="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
         CI charcoal production log · first-launch setup
       </p>
     </header>
@@ -88,10 +99,22 @@
       <div class="flex items-baseline gap-3">
         <h1 class="text-xl font-bold tracking-tight">codo</h1>
         <span class="text-xs font-mono text-neutral-500">v{state.version}</span>
-        <span class="text-xs text-neutral-600">·</span>
-        <span class="text-xs text-emerald-400/70 font-mono">connected</span>
+        <span class="text-xs text-neutral-400 dark:text-neutral-600">·</span>
+        <span class="text-xs font-mono text-emerald-700 dark:text-emerald-400">connected</span>
       </div>
-      <div class="text-xs text-neutral-600 font-mono">CI Cebu · Step 3 vertical slice</div>
+      <div class="flex items-center gap-3">
+        <button
+          type="button"
+          onclick={toggleTheme}
+          title={isDark ? 'switch to light mode' : 'switch to dark mode'}
+          class="rounded border border-neutral-300 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-0.5 text-xs font-mono text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        >
+          {isDark ? '☀ light' : '🌙 dark'}
+        </button>
+        <span class="text-xs font-mono text-neutral-500 dark:text-neutral-600">
+          CI Cebu · Step 3 vertical slice
+        </span>
+      </div>
     </header>
 
     <!-- Unified log: input row IS the next row visually -->
@@ -99,7 +122,7 @@
 
     <!-- Updater (small panel at the bottom) -->
     <details class="text-xs">
-      <summary class="cursor-pointer text-neutral-500 hover:text-neutral-300 px-1">
+      <summary class="cursor-pointer px-1 text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300">
         app maintenance
       </summary>
       <div class="mt-2">
@@ -112,11 +135,11 @@
     <header class="text-center">
       <h1 class="text-4xl font-bold tracking-tight">codo</h1>
     </header>
-    <section class="w-full max-w-xl rounded-xl border border-red-900 bg-red-950 p-6 space-y-3">
-      <h2 class="text-lg font-semibold text-red-200">Boot error</h2>
-      <pre class="text-xs text-red-300 whitespace-pre-wrap">{state.message}</pre>
+    <section class="w-full max-w-xl rounded-xl border border-red-300 bg-red-50 p-6 space-y-3 dark:border-red-900 dark:bg-red-950">
+      <h2 class="text-lg font-semibold text-red-700 dark:text-red-200">Boot error</h2>
+      <pre class="text-xs whitespace-pre-wrap text-red-700 dark:text-red-300">{state.message}</pre>
       <button
-        class="rounded-md bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700"
+        class="rounded-md px-3 py-1.5 text-sm bg-neutral-200 hover:bg-neutral-300 text-neutral-900 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:text-neutral-100"
         onclick={refresh}
       >
         Retry

@@ -96,16 +96,20 @@
   }
 </script>
 
-<section class="rounded-md border border-neutral-800 bg-neutral-950 p-3 space-y-2">
+<section
+  class="rounded-md border p-3 space-y-2 border-neutral-300 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+>
   <div class="flex items-center justify-between gap-3">
     <div>
-      <p class="text-xs uppercase tracking-wide text-neutral-500">Updates</p>
-      <p class="text-xs text-neutral-500 font-mono">
+      <p class="text-xs uppercase tracking-wide font-semibold text-neutral-700 dark:text-neutral-500">
+        Updates
+      </p>
+      <p class="text-xs font-mono text-neutral-500">
         endpoint: github releases → latest.json
       </p>
     </div>
     <button
-      class="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+      class="rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 bg-neutral-200 hover:bg-neutral-300 text-neutral-900 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:text-neutral-100"
       onclick={checkNow}
       disabled={state.kind === 'checking' || state.kind === 'downloading'}
     >
@@ -114,13 +118,13 @@
   </div>
 
   {#if state.kind === 'idle'}
-    <p class="text-xs text-neutral-500">
+    <p class="text-sm text-neutral-600 dark:text-neutral-500">
       Click <em>Check for updates</em> to query the GitHub Releases endpoint.
     </p>
   {:else if state.kind === 'checking'}
-    <p class="text-xs text-neutral-400 font-mono">querying github…</p>
+    <p class="text-sm font-mono text-neutral-700 dark:text-neutral-400">querying github…</p>
   {:else if state.kind === 'no_update'}
-    <p class="text-xs text-neutral-300 font-mono">
+    <p class="text-sm font-mono text-neutral-800 dark:text-neutral-300">
       v{state.current} is current.
       <span class="text-neutral-500">
         (checked {state.checked_at.toLocaleTimeString()})
@@ -129,27 +133,31 @@
   {:else if state.kind === 'available'}
     <div class="space-y-2">
       <p class="text-sm font-mono">
-        <span class="text-neutral-400">{state.current}</span>
-        <span class="text-neutral-600">→</span>
-        <span class="text-emerald-300">{state.available}</span>
+        <span class="text-neutral-700 dark:text-neutral-400">{state.current}</span>
+        <span class="text-neutral-400 dark:text-neutral-600">→</span>
+        <span class="text-emerald-700 dark:text-emerald-300">{state.available}</span>
       </p>
       {#if state.notes}
-        <details class="text-xs text-neutral-400">
-          <summary class="cursor-pointer hover:text-neutral-200">release notes</summary>
-          <pre class="mt-1 whitespace-pre-wrap font-mono text-[11px] leading-tight">{state.notes}</pre>
+        <details class="text-sm text-neutral-700 dark:text-neutral-400">
+          <summary class="cursor-pointer hover:text-neutral-900 dark:hover:text-neutral-200">
+            release notes
+          </summary>
+          <pre class="mt-1 whitespace-pre-wrap font-mono text-[12px] leading-tight">{state.notes}</pre>
         </details>
       {/if}
       <button
-        class="rounded-md bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 text-xs font-medium"
+        class="rounded-md bg-emerald-600 hover:bg-emerald-500 dark:bg-emerald-700 dark:hover:bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white"
         onclick={downloadAndInstall}
       >
         Download & install
       </button>
     </div>
   {:else if state.kind === 'downloading'}
-    <div class="space-y-1 font-mono text-xs">
-      <p class="text-neutral-300">
-        downloading {state.current} <span class="text-neutral-600">→</span> {state.available}
+    <div class="space-y-1 font-mono text-sm">
+      <p class="text-neutral-800 dark:text-neutral-300">
+        downloading {state.current}
+        <span class="text-neutral-400 dark:text-neutral-600">→</span>
+        {state.available}
       </p>
       <p class="text-neutral-500">
         {formatBytes(state.downloaded)}{#if state.total} / {formatBytes(state.total)} ({progressPct(
@@ -158,7 +166,7 @@
           )}){/if}
       </p>
       {#if state.total}
-        <div class="h-1 w-full bg-neutral-800 rounded overflow-hidden">
+        <div class="h-1 w-full rounded overflow-hidden bg-neutral-200 dark:bg-neutral-800">
           <div
             class="h-full bg-emerald-500 transition-[width] duration-300"
             style="width: {progressPct(state.downloaded, state.total)}"
@@ -167,10 +175,10 @@
       {/if}
     </div>
   {:else if state.kind === 'installed'}
-    <p class="text-xs text-emerald-300 font-mono">
+    <p class="text-sm font-mono text-emerald-700 dark:text-emerald-300">
       installed v{state.available} — relaunching…
     </p>
   {:else if state.kind === 'error'}
-    <pre class="text-xs text-red-300 whitespace-pre-wrap font-mono">{state.message}</pre>
+    <pre class="text-sm font-mono text-red-700 whitespace-pre-wrap dark:text-red-300">{state.message}</pre>
   {/if}
 </section>
