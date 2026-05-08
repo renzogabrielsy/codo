@@ -140,15 +140,12 @@
         input
       });
       onSaved(row);
-      // Phase A: clear non-sticky fields. (Sticky persistence is Phase B.)
-      gradeCode = '';
-      sourceCode = '';
-      plantCodeOverride = '';
-      warehouseCode = '';
-      partnerEquipmentCode = '';
+      // Excel-like sticky-by-default: keep everything that's likely to be
+      // the same on the next row. Only weight, flec count, and notes are
+      // intrinsically per-event and clear on submit. Phase B will refine
+      // (e.g. tab cursor jumps to weight; copy-from-above buttons; etc).
       weightKg = '';
       flecCount = '';
-      whseSide = '';
       notes = '';
     } catch (e) {
       err = String(e);
@@ -379,6 +376,6 @@
     >
       {submitting ? 'saving…' : 'Submit'}
     </button>
-    <span class="text-xs text-neutral-600">Phase B will add Cmd+Enter, tab navigation, sticky defaults, type-ahead.</span>
+    <span class="text-xs text-neutral-600">Sticky fields keep their values; weight/flec/notes clear after submit. Phase B will add Cmd+Enter, tab focus, copy-from-above, type-ahead.</span>
   </div>
 </form>
