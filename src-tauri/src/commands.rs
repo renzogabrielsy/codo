@@ -411,13 +411,37 @@ pub async fn create_production_event(
     insert_production_event(&conn, &input).await
 }
 
+/// Insert validation policy.
+///
+/// `Strict` runs the full §7.1 row-level matrix and rejects forbidden
+/// combinations. Used by every Tauri command for new writes.
+///
+/// `Migration` skips §7.1 — used by `codo-migrate` because the workbook
+/// contains historical rows that fail §7.1 by design (e.g. cosmetic
+/// W6/W7 in the WHSE column → NULL warehouse on a FLEC-bagging event,
+/// per brain §2 vs §7.1 inconsistency). Those rows still belong in the
+/// log; codo's UI later surfaces them as "needs review" via drift_log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertMode {
+    Strict,
+    Migration,
+}
+
 /// Pure-of-Tauri version of `create_production_event` — the command above
 /// just looks up the connection from `AppState` and forwards. Exposed `pub`
-/// so integration tests can drive the full canonicalize → validate →
-/// compute_unique_tag → insert pipeline against a tmp libSQL DB.
+/// so integration tests + the migration bin can drive the full canonicalize
+/// → optionally-validate → compute_unique_tag → insert pipeline.
 pub async fn insert_production_event(
     conn: &libsql::Connection,
     input: &CreateProductionEventInput,
+) -> Result<ProductionEventRow> {
+    insert_production_event_with_mode(conn, input, InsertMode::Strict).await
+}
+
+pub async fn insert_production_event_with_mode(
+    conn: &libsql::Connection,
+    input: &CreateProductionEventInput,
+    mode: InsertMode,
 ) -> Result<ProductionEventRow> {
     // 1. Canonicalize every categorical (defense in depth — the JS form
     //    already runs zod, but Rust is the source of truth).
@@ -443,13 +467,17 @@ pub async fn insert_production_event(
     //    only honoured when source.kind = warehouse_flec.
     let plant = derive_plant(source, input.plant_code_override.as_deref())?;
 
-    // 3. Run the §7.1 row-level validity matrix.
-    validate_production_event(EventShape {
-        disposition,
-        source,
-        warehouse,
-        plant,
-    })?;
+    // 3. Run the §7.1 row-level validity matrix in Strict mode. Migration
+    //    mode skips this (the workbook has legacy rows that violate §7.1
+    //    by design — see InsertMode docs).
+    if mode == InsertMode::Strict {
+        validate_production_event(EventShape {
+            disposition,
+            source,
+            warehouse,
+            plant,
+        })?;
+    }
 
     // 4. Parse dates + validate weight.
     let recv_date = parse_iso_date(&input.recv_date, "recv_date")?;
@@ -831,20 +859,20 @@ fn derive_plant(source: SourceCode, override_code: Option<&str>) -> Result<Optio
 // tags interleave cleanly with migrated workbook tags in Step 4.
 // ---------------------------------------------------------------------------
 
-struct UniqueTagInput<'a> {
-    recv_date: NaiveDate,
-    prod_date: Option<NaiveDate>,
-    batch: &'a str,
-    shift: Option<&'a Shift>,
-    grade: Grade,
-    plant: Option<&'a Plant>,
-    warehouse: Option<&'a Warehouse>,
-    whse_side: Option<&'a Side>,
-    source: SourceCode,
-    disposition: Disposition,
+pub struct UniqueTagInput<'a> {
+    pub recv_date: NaiveDate,
+    pub prod_date: Option<NaiveDate>,
+    pub batch: &'a str,
+    pub shift: Option<&'a Shift>,
+    pub grade: Grade,
+    pub plant: Option<&'a Plant>,
+    pub warehouse: Option<&'a Warehouse>,
+    pub whse_side: Option<&'a Side>,
+    pub source: SourceCode,
+    pub disposition: Disposition,
 }
 
-fn compute_unique_tag(i: &UniqueTagInput) -> String {
+pub fn compute_unique_tag(i: &UniqueTagInput) -> String {
     let segs: [String; 10] = [
         excel_serial(i.recv_date).to_string(),
         i.prod_date.map(excel_serial).map(|n| n.to_string()).unwrap_or_default(),

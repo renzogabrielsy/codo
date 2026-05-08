@@ -10,6 +10,15 @@ rust-version = "1.77"
 name = "codo_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Step 4 — one-shot Excel migration CLI. `cargo run --bin codo-migrate -- <path>`
+# reads `2025 CI PRODUCTION V2.xlsb` and pipes every row through codo's
+# existing canonicalize / §7.1 validate / unique_tag pipeline into the
+# local SQLite DB. See PROJECT_BRAIN.md §9 Step 4 + the deviation note
+# (Rust binary instead of Python script — avoids canonicalize-rule drift).
+[[bin]]
+name = "codo-migrate"
+path = "src/bin/codo_migrate.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -57,6 +66,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Logging.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Step 4 migration: read .xlsb directly, no LibreOffice conversion step.
+# Calamine is the standard pure-Rust Excel reader. Only the codo-migrate
+# bin imports it; the main Tauri binary doesn't pull it into runtime
+# (Cargo only links it for binaries that `use` it).
+calamine = "0.26"
 
 # NOTE: tauri-specta 2.0.0-rc.24 is the brain's intended type bridge.
 # Pinning it requires a specific specta companion version that drifts every
