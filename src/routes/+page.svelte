@@ -5,21 +5,34 @@
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
 
   type BootState =
-    | { kind: 'loading' }
+    | { kind: 'loading'; step: string }
     | { kind: 'needs_onboarding' }
     | { kind: 'ready'; warehouses: { id: number; code: string; default_unit: string }[] }
     | { kind: 'error'; message: string };
 
-  let state: BootState = $state({ kind: 'loading' });
+  let state: BootState = $state({ kind: 'loading', step: 'starting…' });
 
   async function refresh() {
-    state = { kind: 'loading' };
+    // Resume-friendly boot: onboarding may have left codo in a partially-
+    // initialized state (creds in keyring but remote migrations never ran,
+    // or local replica never opened). Each step is idempotent — safe to
+    // run on every cold start.
+    state = { kind: 'loading', step: 'starting…' };
     try {
+      state = { kind: 'loading', step: 'checking onboarding…' };
       const onboarded = await invoke<boolean>('is_onboarded');
       if (!onboarded) {
         state = { kind: 'needs_onboarding' };
         return;
       }
+
+      state = { kind: 'loading', step: 'applying migrations to remote DB…' };
+      await invoke<void>('run_remote_migrations');
+
+      state = { kind: 'loading', step: 'opening local replica…' };
+      await invoke<void>('init_local_replica');
+
+      state = { kind: 'loading', step: 'loading warehouses…' };
       const warehouses = await invoke<{ id: number; code: string; default_unit: string }[]>(
         'list_warehouses'
       );
@@ -41,7 +54,7 @@
   </header>
 
   {#if state.kind === 'loading'}
-    <p class="text-neutral-400">checking onboarding state…</p>
+    <p class="text-neutral-400 font-mono text-sm">{state.step}</p>
   {:else if state.kind === 'needs_onboarding'}
     <Onboarding onComplete={refresh} />
   {:else if state.kind === 'ready'}
