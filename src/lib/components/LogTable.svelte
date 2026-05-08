@@ -38,6 +38,64 @@
     if (v === undefined || v === null) return '';
     return String(v).trim();
   }
+
+  // -------------------------------------------------------------------------
+  // Row tinting by direction-of-flow.
+  //   FLEC  → "we add to inventory"   → emerald (green = in)
+  //   C1-C4 / RK1-RK4 → "CCC takes from us" → purple (out)
+  // Applied to both drafts (reactive on dispositionRaw) and history rows
+  // (on disposition_kind).
+  // -------------------------------------------------------------------------
+
+  export function rowTintByKind(kind: string): string {
+    switch (kind) {
+      case 'flec_bagging':
+        return 'bg-emerald-950/30';
+      case 'partner_crusher':
+      case 'partner_kiln':
+        return 'bg-purple-950/30';
+      default:
+        return '';
+    }
+  }
+  export function rowTintByRaw(raw: unknown): string {
+    const u = trimStr(raw).toUpperCase();
+    if (u === 'FLEC') return 'bg-emerald-950/30';
+    if (/^(C[1-4]|RK[1-4])$/.test(u)) return 'bg-purple-950/30';
+    return '';
+  }
+  export function draftBorderByRaw(raw: unknown): string {
+    const u = trimStr(raw).toUpperCase();
+    if (u === 'FLEC') return 'border-emerald-700/40';
+    if (/^(C[1-4]|RK[1-4])$/.test(u)) return 'border-purple-700/40';
+    return 'border-neutral-700/40';
+  }
+
+  // -------------------------------------------------------------------------
+  // Date parsing — accept loose formats so the operator can just type "5/8".
+  // -------------------------------------------------------------------------
+
+  /** Parse '5/8' / '5/8/26' / '5/8/2026' / '2026-05-08' → ISO 'YYYY-MM-DD'.
+   *  Returns null if unparseable so the Rust side rejects with a clear error. */
+  export function parseDateLoose(raw: unknown): string | null {
+    const s = trimStr(raw);
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+    if (!m) return null;
+    const month = m[1].padStart(2, '0');
+    const day = m[2].padStart(2, '0');
+    let year = m[3];
+    if (!year) year = new Date().getFullYear().toString();
+    else if (year.length === 2) year = '20' + year;
+    return `${year}-${month}-${day}`;
+  }
+
+  /** Today as 'M/D' for compact, Excel-like default in the input cells. */
+  export function todayShort(): string {
+    const d = new Date();
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
 </script>
 
 <script lang="ts">
@@ -82,9 +140,6 @@
     rowError: string | null;
   };
 
-  function todayIso(): string {
-    return new Date().toISOString().slice(0, 10);
-  }
   function currentMonthName(): string {
     return new Date().toLocaleString('en-US', { month: 'long' }).toUpperCase();
   }
@@ -94,12 +149,13 @@
 
   /** Fresh draft seeded from `template`'s sticky fields (or codo defaults if
    *  `template` is null). The fields that change every row — weight, flec,
-   *  notes — are NEVER copied. */
+   *  notes — are NEVER copied. Dates default to today as `M/D` (operator can
+   *  type `5/8/26` for cross-year work). */
   function newDraft(template?: Draft | null): Draft {
     return {
       id: newDraftId(),
-      recvDate: template?.recvDate ?? todayIso(),
-      prodDate: template?.prodDate ?? todayIso(),
+      recvDate: template?.recvDate ?? todayShort(),
+      prodDate: template?.prodDate ?? todayShort(),
       batch: template?.batch ?? currentMonthName(),
       shiftCode: template?.shiftCode ?? 'M',
       gradeCode: template?.gradeCode ?? '',
@@ -168,13 +224,19 @@
   // -------------------------------------------------------------------------
 
   function validateDraft(d: Draft): string | null {
-    const required = ['batch', 'gradeCode', 'sourceCode', 'weightStr'] as const;
     const missing: string[] = [];
     if (!trimStr(d.batch)) missing.push('batch');
     if (!trimStr(d.gradeCode)) missing.push('grade');
     if (!trimStr(d.sourceCode)) missing.push('source');
     if (!trimStr(d.weightStr)) missing.push('weight');
     if (missing.length > 0) return `missing ${missing.join(', ')}`;
+
+    if (!parseDateLoose(d.recvDate)) {
+      return `recv date '${trimStr(d.recvDate)}' — try M/D or M/D/YY`;
+    }
+    if (trimStr(d.prodDate) !== '' && !parseDateLoose(d.prodDate)) {
+      return `prod date '${trimStr(d.prodDate)}' — try M/D or M/D/YY`;
+    }
 
     const wt = parseFloat(trimStr(d.weightStr));
     if (!(wt > 0)) return 'weight must be > 0';
@@ -192,9 +254,11 @@
     const flecRaw = trimStr(d.flecStr);
     const flecN = flecRaw === '' ? null : parseInt(flecRaw, 10);
     const sel = selectedSourceFor(d);
+    const recvIso = parseDateLoose(d.recvDate) ?? '';
+    const prodIso = parseDateLoose(d.prodDate); // null if blank or unparseable
     return {
-      recvDate: d.recvDate,
-      prodDate: trimStr(d.prodDate) === '' ? null : d.prodDate,
+      recvDate: recvIso,
+      prodDate: prodIso,
       batch: trimStr(d.batch).toUpperCase(),
       shiftCode: trimStr(d.shiftCode) === '' ? null : trimStr(d.shiftCode).toUpperCase(),
       gradeCode: trimStr(d.gradeCode).toUpperCase(),
@@ -440,27 +504,30 @@
       <tbody>
         <!-- DRAFT ROWS (editable). The operator can stage many. -->
         {#each drafts as draft, di (draft.id)}
-          <tr
-            class="bg-emerald-950/30 border-y border-emerald-700/30
-                   {draft.rowError ? 'ring-1 ring-red-500/60 bg-red-950/30' : ''}"
-          >
-            <td class="px-1 text-center text-emerald-400 font-bold" title="draft row">
+          {@const tint = draft.rowError ? 'bg-red-950/40' : rowTintByRaw(draft.dispositionRaw)}
+          {@const border = draft.rowError
+            ? 'border-red-500/60'
+            : draftBorderByRaw(draft.dispositionRaw)}
+          <tr class="border-y-2 {border} {tint}">
+            <td class="px-1 text-center font-bold {draft.rowError ? 'text-red-400' : 'text-emerald-400'}" title="draft row">
               +
             </td>
             <td class="px-1 py-1">
               <input
-                type="date"
+                type="text"
                 bind:value={draft.recvDate}
                 onkeydown={onCellKey}
-                class="cell-input"
+                placeholder="M/D"
+                class="cell-input font-mono"
               />
             </td>
             <td class="px-1 py-1">
               <input
-                type="date"
+                type="text"
                 bind:value={draft.prodDate}
                 onkeydown={onCellKey}
-                class="cell-input"
+                placeholder="M/D"
+                class="cell-input font-mono"
               />
             </td>
             <td class="px-1 py-1">
@@ -653,7 +720,11 @@
           </tr>
         {:else}
           {#each rows as row (row.id)}
-            <tr class="border-t border-neutral-900 hover:bg-neutral-900/40 text-neutral-300">
+            <tr
+              class="border-t border-neutral-900 hover:bg-neutral-900/40 text-neutral-300 {rowTintByKind(
+                row.disposition_kind
+              )}"
+            >
               <td></td>
               <td class="px-2 py-1 text-neutral-200">{fmtDate(row.recv_date)}</td>
               <td class="px-2 py-1 text-neutral-500">{fmtDate(row.prod_date)}</td>
