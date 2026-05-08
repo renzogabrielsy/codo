@@ -61,7 +61,7 @@ pub fn canonicalize_shift(raw: &str) -> Result<Shift, CanonError> {
 // GRADE
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Grade {
     G3x50,
     G2x6,
@@ -257,7 +257,7 @@ pub fn canonicalize_source(raw: &str) -> Result<SourceCode, CanonError> {
 // WHSE SIDE  (LS / RS only — DVO batch codes are parsed separately)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
     Ls,
     Rs,
