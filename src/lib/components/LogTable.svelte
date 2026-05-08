@@ -135,51 +135,69 @@
 
   let weightInput: HTMLInputElement;
 
+  // Defensive trim — Svelte's `bind:value` on <input type="number"> coerces
+  // the value to a number, so calling `.trim()` directly on weightStr /
+  // flecStr would throw TypeError on a Number. Normalize through String().
+  function trimStr(v: unknown): string {
+    if (v === undefined || v === null) return '';
+    return String(v).trim();
+  }
+
   async function submit() {
     err = null;
     if (submitting) return;
 
-    if (!gradeCode.trim() || !sourceCode.trim() || !batch.trim() || !weightStr.trim()) {
-      err = 'fill in batch, grade, source, weight';
-      return;
-    }
-    const wt = parseFloat(weightStr);
-    if (!(wt > 0)) {
-      err = 'weight must be > 0';
-      return;
-    }
-    const flecN = flecStr.trim() === '' ? null : parseInt(flecStr, 10);
-    if (flecN !== null && (!Number.isFinite(flecN) || flecN <= 0)) {
-      err = 'flec must be a positive integer (or blank)';
-      return;
-    }
-
-    const input: CreateProductionEventInput = {
-      recvDate,
-      prodDate: prodDate.trim() === '' ? null : prodDate,
-      batch: batch.trim().toUpperCase(),
-      shiftCode: shiftCode.trim() === '' ? null : shiftCode.trim().toUpperCase(),
-      gradeCode: gradeCode.trim().toUpperCase(),
-      sourceCode: sourceCode.trim().toUpperCase(),
-      plantCodeOverride:
-        selectedSource?.kind === 'warehouse_flec' && plantCodeOverride.trim()
-          ? plantCodeOverride.trim().toUpperCase()
-          : null,
-      warehouseCode: warehouseCode.trim() === '' ? null : warehouseCode.trim().toUpperCase(),
-      dispositionRaw: dispositionRaw.trim().toUpperCase(),
-      weightKg: wt,
-      flecCount: flecN,
-      whseSide: whseSide.trim() === '' ? null : whseSide.trim().toUpperCase(),
-      flecStat: null,
-      dvoBatchId: null,
-      notes: notes.trim() === '' ? null : notes
-    };
-
+    // Wrap EVERYTHING in try/catch so any unexpected runtime error (typo
+    // bug, future binding mistake, etc.) surfaces in the red banner
+    // instead of silently aborting. We hit this in real life: a stray
+    // `weightStr.trim()` on a numeric input crashed submit() invisibly.
     submitting = true;
     try {
+      if (
+        !trimStr(gradeCode) ||
+        !trimStr(sourceCode) ||
+        !trimStr(batch) ||
+        !trimStr(weightStr)
+      ) {
+        err = 'fill in batch, grade, source, weight';
+        return;
+      }
+      const wt = parseFloat(trimStr(weightStr));
+      if (!(wt > 0)) {
+        err = 'weight must be > 0';
+        return;
+      }
+      const flecRaw = trimStr(flecStr);
+      const flecN = flecRaw === '' ? null : parseInt(flecRaw, 10);
+      if (flecN !== null && (!Number.isFinite(flecN) || flecN <= 0)) {
+        err = 'flec must be a positive integer (or blank)';
+        return;
+      }
+
+      const input: CreateProductionEventInput = {
+        recvDate,
+        prodDate: trimStr(prodDate) === '' ? null : prodDate,
+        batch: trimStr(batch).toUpperCase(),
+        shiftCode: trimStr(shiftCode) === '' ? null : trimStr(shiftCode).toUpperCase(),
+        gradeCode: trimStr(gradeCode).toUpperCase(),
+        sourceCode: trimStr(sourceCode).toUpperCase(),
+        plantCodeOverride:
+          selectedSource?.kind === 'warehouse_flec' && trimStr(plantCodeOverride)
+            ? trimStr(plantCodeOverride).toUpperCase()
+            : null,
+        warehouseCode:
+          trimStr(warehouseCode) === '' ? null : trimStr(warehouseCode).toUpperCase(),
+        dispositionRaw: trimStr(dispositionRaw).toUpperCase(),
+        weightKg: wt,
+        flecCount: flecN,
+        whseSide: trimStr(whseSide) === '' ? null : trimStr(whseSide).toUpperCase(),
+        flecStat: null,
+        dvoBatchId: null,
+        notes: trimStr(notes) === '' ? null : String(notes)
+      };
+
       const row = await invoke<ProductionEventRow>('create_production_event', { input });
-      // Excel-feel: clear only what should change next row. Sticky everything
-      // else.
+      // Excel-feel: clear only what changes next row. Sticky everything else.
       weightStr = '';
       flecStr = '';
       notes = '';
@@ -188,7 +206,7 @@
       weightInput?.focus();
       weightInput?.select();
     } catch (e) {
-      err = String(e);
+      err = e instanceof Error ? e.message : String(e);
     } finally {
       submitting = false;
     }
