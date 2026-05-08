@@ -17,6 +17,13 @@ tauri-build = { version = "2", features = [] }
 # Tauri shell — pinned ≥ 2.6 per PROJECT_BRAIN.md §5 #10.
 tauri = { version = "2.6", features = [] }
 
+# In-app auto-updater (PROJECT_BRAIN.md §3 build/packaging row). Self-signed
+# via the Tauri signer keypair embedded as `plugins.updater.pubkey` in
+# tauri.conf.json — Apple Developer ID / notarization is a SEPARATE,
+# optional concern (Gatekeeper warnings on first install only).
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 # libSQL — local embedded replica that auto-syncs to Turso cloud.
 # `replication` enables embedded-replica builders; `remote` enables direct-remote
 # connections used by the migration runner per PROJECT_BRAIN.md §5 #1.

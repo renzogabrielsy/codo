@@ -32,6 +32,8 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::is_onboarded,
@@ -39,6 +41,7 @@ pub fn run() {
             commands::run_remote_migrations,
             commands::init_local_replica,
             commands::list_warehouses,
+            commands::current_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running codo");

@@ -4,6 +4,8 @@
   "description": "Default capability for codo's main window — minimum surface for the scaffold.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "updater:default",
+    "process:default"
   ]
 }

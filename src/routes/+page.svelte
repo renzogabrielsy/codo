@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
+  import UpdateChecker from '$lib/components/UpdateChecker.svelte';
 
   type BootState =
     | { kind: 'loading' }
@@ -60,6 +61,7 @@
           {/each}
         </ul>
       </div>
+      <UpdateChecker />
       <p class="text-xs text-neutral-500">
         Step 3 wires up the &quot;Log a production event&quot; form.
       </p>

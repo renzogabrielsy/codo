@@ -28,11 +28,20 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png"
     ],
     "category": "Productivity",
     "shortDescription": "CI charcoal production log",
     "longDescription": "Local desktop event log for CI's charcoal-manufacturing operations. See PROJECT_BRAIN.md."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyMzIxQjU1NTJDNDgxRDUKUldUVmdjUlNWUnN5RWsyUzIxb3hpa2JFbWg5MXArdWtPV1cxUDZyVjBIWVF1VFM2TlRubGxjangK",
+      "endpoints": [
+        "https://github.com/renzogabrielsy/codo/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

@@ -89,6 +89,13 @@ pub struct WarehouseRow {
     pub default_unit: String,
 }
 
+/// codo's compiled-in version. Used by the updater UI to show "you have X,
+/// Y is available" with the §4.7 always-show-solution rule.
+#[tauri::command]
+pub fn current_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Tiny demo command for the "Hello" page — proves the local replica is
 /// connected and the lookup tables seeded. Listed in WHSE 1, 2, 3, 5, 7 order.
 #[tauri::command]
