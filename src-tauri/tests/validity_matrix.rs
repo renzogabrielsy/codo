@@ -641,6 +641,132 @@ async fn every_forbidden_fixture_is_rejected_before_insert() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Step 3: insert_production_event() end-to-end. Exercises the full
+// canonicalize → §7.2 plant derivation → §7.1 validation → unique_tag →
+// transactional insert pipeline against the live v1.sql schema.
+// ---------------------------------------------------------------------------
+
+use codo_lib::commands::{insert_production_event, CreateProductionEventInput};
+
+fn payload() -> CreateProductionEventInput {
+    CreateProductionEventInput {
+        recv_date: "2026-05-08".to_string(),
+        prod_date: Some("2026-05-08".to_string()),
+        batch: "MAY".to_string(),
+        shift_code: Some("M".to_string()),
+        grade_code: "3X50".to_string(),
+        source_code: "TNK 1".to_string(),
+        plant_code_override: None,
+        warehouse_code: Some("WHSE 7".to_string()),
+        disposition_raw: "FLEC".to_string(),
+        weight_kg: 14000.0,
+        flec_count: Some(30),
+        whse_side: Some("RS".to_string()),
+        flec_stat: None,
+        dvo_batch_id: None,
+        notes: None,
+    }
+}
+
+#[tokio::test]
+async fn insert_production_event_canonical_happy_path() {
+    let (_tmp, _db, conn) = fresh_db().await;
+    let row = insert_production_event(&conn, &payload()).await.unwrap();
+
+    assert!(row.id > 0);
+    assert_eq!(row.batch, "MAY");
+    assert_eq!(row.grade_code, "3X50");
+    assert_eq!(row.plant_code.as_deref(), Some("W6")); // forced from TNK 1 (§7.2)
+    assert_eq!(row.warehouse_code.as_deref(), Some("WHSE 7"));
+    assert_eq!(row.source_code, "TNK 1");
+    assert_eq!(row.disposition_kind, "flec_bagging");
+    assert_eq!(row.flec_count, Some(30));
+    assert_eq!(row.whse_side.as_deref(), Some("RS"));
+    // unique_tag matches schema-extraction §3.1 format
+    assert!(
+        row.unique_tag.contains("MAY-M-3X50-W6-WHSE 7-RS-TNK 1-FLEC"),
+        "tag was {}",
+        row.unique_tag
+    );
+}
+
+#[tokio::test]
+async fn insert_production_event_canonicalizes_typos() {
+    let (_tmp, _db, conn) = fresh_db().await;
+
+    // 'M, ' shift typo, lowercase grade, source with mismatched spacing
+    let mut p = payload();
+    p.shift_code = Some("M, ".to_string()); // workbook typo
+    p.grade_code = "3x50".to_string();
+    p.source_code = "tnk 1".to_string();
+
+    let row = insert_production_event(&conn, &p).await.unwrap();
+    assert_eq!(row.shift_code.as_deref(), Some("M"));
+    assert_eq!(row.grade_code, "3X50");
+    assert_eq!(row.source_code, "TNK 1");
+}
+
+#[tokio::test]
+async fn insert_production_event_rejects_forbidden_combination() {
+    let (_tmp, _db, conn) = fresh_db().await;
+
+    // FLEC bagging into WHSE 3 — §7.1 forbids it (DVO-only warehouse).
+    let mut p = payload();
+    p.warehouse_code = Some("WHSE 3".to_string());
+    let err = insert_production_event(&conn, &p).await.unwrap_err();
+    assert!(
+        format!("{err}").contains("WHSE 3"),
+        "expected 'WHSE 3' in error, got {err}"
+    );
+}
+
+#[tokio::test]
+async fn insert_production_event_unique_tag_collision_is_rejected() {
+    let (_tmp, _db, conn) = fresh_db().await;
+
+    insert_production_event(&conn, &payload()).await.unwrap();
+    let err = insert_production_event(&conn, &payload()).await.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.to_lowercase().contains("unique") || msg.to_lowercase().contains("constraint"),
+        "expected uniqueness error, got {msg}"
+    );
+}
+
+#[tokio::test]
+async fn insert_production_event_partner_takeback_no_warehouse() {
+    let (_tmp, _db, conn) = fresh_db().await;
+    let mut p = payload();
+    p.disposition_raw = "C1".to_string();
+    p.warehouse_code = None;
+    p.flec_count = None;
+    p.whse_side = None;
+
+    let row = insert_production_event(&conn, &p).await.unwrap();
+    assert_eq!(row.disposition_kind, "partner_crusher");
+    assert_eq!(row.partner_equipment_code.as_deref(), Some("C1"));
+    assert_eq!(row.warehouse_code, None);
+}
+
+#[tokio::test]
+async fn insert_production_event_dvo_outflow_into_whse3() {
+    let (_tmp, _db, conn) = fresh_db().await;
+    let mut p = payload();
+    p.source_code = "DVO".to_string();
+    p.warehouse_code = Some("WHSE 3".to_string());
+    p.disposition_raw = "RK3".to_string();
+    p.whse_side = None;
+    p.flec_count = None; // DVO product has no flec count (PP sacks)
+
+    let row = insert_production_event(&conn, &p).await.unwrap();
+    assert_eq!(row.source_code, "DVO");
+    assert_eq!(row.plant_code.as_deref(), Some("DVO"));
+    assert_eq!(row.warehouse_code.as_deref(), Some("WHSE 3"));
+    assert_eq!(row.disposition_kind, "partner_kiln");
+    assert_eq!(row.partner_equipment_code.as_deref(), Some("RK3"));
+}
+
 #[tokio::test]
 async fn db_has_seeded_lookup_tables() {
     let (_tmp, _db, conn) = fresh_db().await;

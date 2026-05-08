@@ -42,6 +42,9 @@ pub fn run() {
             commands::init_local_replica,
             commands::list_warehouses,
             commands::current_version,
+            commands::list_lookups,
+            commands::create_production_event,
+            commands::list_recent_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running codo");

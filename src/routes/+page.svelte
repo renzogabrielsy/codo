@@ -3,20 +3,27 @@
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
+  import RecentEventsTable from '$lib/components/RecentEventsTable.svelte';
+  import LogEventForm from '$lib/components/LogEventForm.svelte';
+  import type { LookupBundle, ProductionEventRow } from '$lib/types/codo';
 
   type BootState =
     | { kind: 'loading'; step: string }
     | { kind: 'needs_onboarding' }
-    | { kind: 'ready'; warehouses: { id: number; code: string; default_unit: string }[] }
+    | {
+        kind: 'ready';
+        version: string;
+        lookups: LookupBundle;
+        recent: ProductionEventRow[];
+      }
     | { kind: 'error'; message: string };
 
   let state: BootState = $state({ kind: 'loading', step: 'starting…' });
 
   async function refresh() {
-    // Resume-friendly boot: onboarding may have left codo in a partially-
-    // initialized state (creds in keyring but remote migrations never ran,
-    // or local replica never opened). Each step is idempotent — safe to
-    // run on every cold start.
+    // Resume-friendly boot: every step is idempotent so codo recovers from
+    // any partial-onboarding state (creds in keyring but migrations not run,
+    // etc.).
     state = { kind: 'loading', step: 'starting…' };
     try {
       state = { kind: 'loading', step: 'checking onboarding…' };
@@ -29,57 +36,86 @@
       state = { kind: 'loading', step: 'applying migrations to remote DB…' };
       await invoke<void>('run_remote_migrations');
 
-      state = { kind: 'loading', step: 'opening local replica…' };
+      state = { kind: 'loading', step: 'opening connection…' };
       await invoke<void>('init_local_replica');
 
-      state = { kind: 'loading', step: 'loading warehouses…' };
-      const warehouses = await invoke<{ id: number; code: string; default_unit: string }[]>(
-        'list_warehouses'
-      );
-      state = { kind: 'ready', warehouses };
+      state = { kind: 'loading', step: 'loading lookups + recent events…' };
+      const [version, lookups, recent] = await Promise.all([
+        invoke<string>('current_version'),
+        invoke<LookupBundle>('list_lookups'),
+        invoke<ProductionEventRow[]>('list_recent_events', { limit: 20 })
+      ]);
+      state = { kind: 'ready', version, lookups, recent };
     } catch (err) {
       state = { kind: 'error', message: String(err) };
     }
   }
 
+  async function refreshRecent() {
+    if (state.kind !== 'ready') return;
+    const recent = await invoke<ProductionEventRow[]>('list_recent_events', { limit: 20 });
+    state = { ...state, recent };
+  }
+
+  function handleSaved(row: ProductionEventRow) {
+    // Optimistically prepend; refreshRecent in the background will re-pull.
+    if (state.kind !== 'ready') return;
+    state = { ...state, recent: [row, ...state.recent].slice(0, 20) };
+    refreshRecent();
+  }
+
   onMount(refresh);
 </script>
 
-<main class="min-h-screen w-full flex flex-col items-center justify-center gap-6 px-6 py-12">
-  <header class="text-center">
-    <h1 class="text-4xl font-bold tracking-tight">codo</h1>
-    <p class="mt-2 text-sm text-neutral-400">
-      CI charcoal production log · Step 2 scaffold
-    </p>
-  </header>
-
-  {#if state.kind === 'loading'}
+{#if state.kind === 'loading'}
+  <main class="min-h-screen w-full flex flex-col items-center justify-center gap-3 px-6 py-12">
+    <h1 class="text-3xl font-bold tracking-tight">codo</h1>
     <p class="text-neutral-400 font-mono text-sm">{state.step}</p>
-  {:else if state.kind === 'needs_onboarding'}
+  </main>
+{:else if state.kind === 'needs_onboarding'}
+  <main class="min-h-screen w-full flex flex-col items-center justify-center gap-6 px-6 py-12">
+    <header class="text-center">
+      <h1 class="text-4xl font-bold tracking-tight">codo</h1>
+      <p class="mt-2 text-sm text-neutral-400">
+        CI charcoal production log · first-launch setup
+      </p>
+    </header>
     <Onboarding onComplete={refresh} />
-  {:else if state.kind === 'ready'}
-    <section class="w-full max-w-xl rounded-xl border border-neutral-800 bg-neutral-900 p-6 space-y-3">
-      <h2 class="text-lg font-semibold">Hello, codo.</h2>
-      <p class="text-sm text-neutral-400">
-        Local replica connected. Migrations applied. Lookup tables seeded.
-      </p>
-      <div class="rounded-md border border-neutral-800 bg-neutral-950 p-3">
-        <p class="mb-2 text-xs uppercase tracking-wide text-neutral-500">Warehouses</p>
-        <ul class="text-sm font-mono space-y-1">
-          {#each state.warehouses as w}
-            <li class="flex justify-between">
-              <span>{w.code}</span>
-              <span class="text-neutral-500">{w.default_unit}</span>
-            </li>
-          {/each}
-        </ul>
+  </main>
+{:else if state.kind === 'ready'}
+  <main class="min-h-screen w-full flex flex-col gap-3 px-4 py-3">
+    <!-- Top bar -->
+    <header class="flex items-baseline justify-between gap-3 px-1">
+      <div class="flex items-baseline gap-3">
+        <h1 class="text-xl font-bold tracking-tight">codo</h1>
+        <span class="text-xs font-mono text-neutral-500">v{state.version}</span>
+        <span class="text-xs text-neutral-600">·</span>
+        <span class="text-xs text-emerald-400/70 font-mono">connected</span>
       </div>
-      <UpdateChecker />
-      <p class="text-xs text-neutral-500">
-        Step 3 wires up the &quot;Log a production event&quot; form.
-      </p>
-    </section>
-  {:else}
+      <div class="text-xs text-neutral-600 font-mono">CI Cebu · Step 3 vertical slice</div>
+    </header>
+
+    <!-- Recent events -->
+    <RecentEventsTable rows={state.recent} />
+
+    <!-- Log form -->
+    <LogEventForm lookups={state.lookups} onSaved={handleSaved} />
+
+    <!-- Updater (small panel at the bottom) -->
+    <details class="text-xs">
+      <summary class="cursor-pointer text-neutral-500 hover:text-neutral-300 px-1">
+        app maintenance
+      </summary>
+      <div class="mt-2">
+        <UpdateChecker />
+      </div>
+    </details>
+  </main>
+{:else}
+  <main class="min-h-screen w-full flex flex-col items-center justify-center gap-6 px-6 py-12">
+    <header class="text-center">
+      <h1 class="text-4xl font-bold tracking-tight">codo</h1>
+    </header>
     <section class="w-full max-w-xl rounded-xl border border-red-900 bg-red-950 p-6 space-y-3">
       <h2 class="text-lg font-semibold text-red-200">Boot error</h2>
       <pre class="text-xs text-red-300 whitespace-pre-wrap">{state.message}</pre>
@@ -90,5 +126,5 @@
         Retry
       </button>
     </section>
-  {/if}
-</main>
+  </main>
+{/if}
