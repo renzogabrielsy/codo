@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { onMount, getContext } from 'svelte';
-  import type { Writable } from 'svelte/store';
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
   import SyncStatus from '$lib/components/SyncStatus.svelte';
   import LogTable from '$lib/components/LogTable.svelte';
+  import TopNav from '$lib/components/TopNav.svelte';
   import type { LookupBundle, ProductionEventRow } from '$lib/types/codo';
 
   type BootState =
@@ -20,20 +20,6 @@
     | { kind: 'error'; message: string };
 
   let state: BootState = $state({ kind: 'loading', step: 'starting…' });
-
-  // Theme is owned by +layout.svelte; we just read + flip it.
-  const theme = getContext<Writable<'dark' | 'light'>>('codo-theme');
-  let isDark = $state(true);
-  $effect(() => {
-    if (!theme) return;
-    return theme.subscribe((t) => {
-      isDark = t === 'dark';
-    });
-  });
-  function toggleTheme() {
-    if (!theme) return;
-    theme.update((t) => (t === 'dark' ? 'light' : 'dark'));
-  }
 
   async function refresh() {
     state = { kind: 'loading', step: 'starting…' };
@@ -94,30 +80,8 @@
     <Onboarding onComplete={refresh} />
   </main>
 {:else if state.kind === 'ready'}
+  <TopNav version={state.version} />
   <main class="min-h-screen w-full flex flex-col gap-3 px-4 py-3">
-    <!-- Top bar -->
-    <header class="flex items-baseline justify-between gap-3 px-1">
-      <div class="flex items-baseline gap-3">
-        <h1 class="text-xl font-bold tracking-tight">codo</h1>
-        <span class="text-xs font-mono text-neutral-500">v{state.version}</span>
-        <span class="text-xs text-neutral-400 dark:text-neutral-600">·</span>
-        <span class="text-xs font-mono text-emerald-700 dark:text-emerald-400">connected</span>
-      </div>
-      <div class="flex items-center gap-3">
-        <button
-          type="button"
-          onclick={toggleTheme}
-          title={isDark ? 'switch to light mode' : 'switch to dark mode'}
-          class="rounded border border-neutral-300 hover:border-neutral-400 dark:border-neutral-700 dark:hover:border-neutral-500 px-2 py-0.5 text-xs font-mono text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-        >
-          {isDark ? '☀ light' : '🌙 dark'}
-        </button>
-        <span class="text-xs font-mono text-neutral-500 dark:text-neutral-600">
-          CI Cebu · Step 3 vertical slice
-        </span>
-      </div>
-    </header>
-
     <!-- Unified log: input row IS the next row visually -->
     <LogTable lookups={state.lookups} rows={state.recent} onSaved={handleSaved} />
 

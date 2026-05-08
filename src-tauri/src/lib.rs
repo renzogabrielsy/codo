@@ -61,6 +61,13 @@ pub fn run() {
             commands::list_recent_events,
             commands::sync_now,
             commands::get_sync_status,
+            commands::get_warehouse_ledger_flec,
+            commands::get_dvo_batch_ledger,
+            commands::list_dvo_batches,
+            commands::list_warehouse_summaries,
+            commands::open_dvo_batch,
+            commands::close_dvo_batch,
+            commands::set_warehouse_opening_balance,
         ])
         .run(tauri::generate_context!())
         .expect("error while running codo");

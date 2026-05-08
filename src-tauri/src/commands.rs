@@ -13,6 +13,10 @@ use crate::canonicalize::{
 use crate::credentials::{self, TursoCreds};
 use crate::db;
 use crate::error::{CodoError, Result};
+use crate::ledger::{
+    dvo_batch_ledger, warehouse_ledger_flec, DvoBatchLedger, DvoBatchSide, DvoBatchStatus,
+    FlecLedger,
+};
 use crate::turso_platform::{self, OnboardingRequest};
 use crate::validation::{validate_production_event, EventShape};
 use crate::AppState;
@@ -958,3 +962,302 @@ mod tests {
         assert_eq!(parts[9], "C1");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step 5: warehouse + DVO ledger commands.
+// ---------------------------------------------------------------------------
+
+/// FLEC ledger for WHSE 1/2/5/7. start_date is ISO 'YYYY-MM-DD'.
+#[tauri::command]
+pub async fn get_warehouse_ledger_flec(
+    warehouse_code: String,
+    start_date: String,
+    state: State<'_, AppState>,
+) -> Result<FlecLedger> {
+    let conn = fresh_conn(&state).await?;
+    let warehouse = canonicalize_warehouse(&warehouse_code)?
+        .ok_or_else(|| CodoError::invalid(format!("warehouse '{warehouse_code}' is empty/invalid")))?;
+    let date = NaiveDate::parse_from_str(start_date.trim(), "%Y-%m-%d")
+        .map_err(|e| CodoError::invalid(format!("start_date '{start_date}' must be ISO YYYY-MM-DD: {e}")))?;
+    warehouse_ledger_flec(&conn, warehouse, date).await
+}
+
+/// DVO batch ledger for one batch.
+#[tauri::command]
+pub async fn get_dvo_batch_ledger(
+    dvo_batch_id: i64,
+    state: State<'_, AppState>,
+) -> Result<DvoBatchLedger> {
+    let conn = fresh_conn(&state).await?;
+    dvo_batch_ledger(&conn, dvo_batch_id).await
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DvoBatchSummary {
+    pub id: i64,
+    pub code: String,
+    pub year: i32,
+    pub start_month: u8,
+    pub side: String, // 'LEFT' | 'RIGHT'
+    pub status: String, // 'open' | 'closed'
+    pub opened_at: String,
+    pub closed_at: Option<String>,
+    pub receipt_count: i64,
+    pub outflow_count: i64,
+    pub frozen_transit_loss: Option<f64>,
+    pub frozen_yield_loss: Option<f64>,
+}
+
+/// List every DVO batch with summary counts. Used by the DVO batch list page.
+#[tauri::command]
+pub async fn list_dvo_batches(state: State<'_, AppState>) -> Result<Vec<DvoBatchSummary>> {
+    let conn = fresh_conn(&state).await?;
+    let mut rows = conn
+        .query(
+            "SELECT db.id, db.code, db.year, db.start_month, db.side, db.status,
+                    db.opened_at, db.closed_at,
+                    db.frozen_transit_loss, db.frozen_yield_loss,
+                    (SELECT COUNT(*) FROM dvo_receipt dr WHERE dr.dvo_batch_id = db.id) AS receipt_count,
+                    (SELECT COUNT(*) FROM production_event pe WHERE pe.dvo_batch_id = db.id) AS outflow_count
+             FROM dvo_batch db
+             ORDER BY db.year DESC, db.start_month DESC, db.side",
+            params![],
+        )
+        .await?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next().await? {
+        out.push(DvoBatchSummary {
+            id: r.get(0)?,
+            code: r.get(1)?,
+            year: r.get::<i64>(2)? as i32,
+            start_month: r.get::<i64>(3)? as u8,
+            side: r.get(4)?,
+            status: r.get(5)?,
+            opened_at: r.get(6)?,
+            closed_at: r.get(7).ok(),
+            frozen_transit_loss: r.get(8).ok(),
+            frozen_yield_loss: r.get(9).ok(),
+            receipt_count: r.get(10)?,
+            outflow_count: r.get(11)?,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WarehouseSummary {
+    pub code: String,
+    pub default_unit: String,
+    /// For flec_count warehouses only (WHSE 1/2/5/7) — sum of current
+    /// (grade, side) balances. None for WHSE 3 (use DVO batch summaries).
+    pub total_flec: Option<i64>,
+    /// Most-recent event recv_date for this warehouse, for "last activity" display.
+    pub last_event_date: Option<String>,
+    pub event_count: i64,
+}
+
+/// Quick rollup per warehouse for the warehouse-list landing page.
+#[tauri::command]
+pub async fn list_warehouse_summaries(
+    state: State<'_, AppState>,
+) -> Result<Vec<WarehouseSummary>> {
+    let conn = fresh_conn(&state).await?;
+    let mut rows = conn
+        .query(
+            "SELECT w.code, w.default_unit,
+                    (SELECT MAX(pe.recv_date) FROM production_event pe WHERE pe.warehouse_id = w.id) AS last_date,
+                    (SELECT COUNT(*) FROM production_event pe WHERE pe.warehouse_id = w.id) AS evt_count
+             FROM warehouse w
+             ORDER BY w.id",
+            params![],
+        )
+        .await?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next().await? {
+        let code: String = r.get(0)?;
+        let unit: String = r.get(1)?;
+        let last_date: Option<String> = r.get(2).ok();
+        let evt_count: i64 = r.get(3)?;
+
+        // Total flec: only meaningful for flec-count warehouses. Compute via
+        // warehouse_ledger_flec from epoch start so it sums every event.
+        let total_flec: Option<i64> = if unit == "flec_count" {
+            let warehouse = canonicalize_warehouse(&code)?
+                .ok_or_else(|| CodoError::internal(format!("seeded warehouse '{code}' invalid?")))?;
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("static");
+            let ledger = warehouse_ledger_flec(&conn, warehouse, epoch).await?;
+            Some(ledger.current_balances.iter().map(|b| b.flec_count).sum())
+        } else {
+            None
+        };
+        out.push(WarehouseSummary {
+            code,
+            default_unit: unit,
+            total_flec,
+            last_event_date: last_date,
+            event_count: evt_count,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenDvoBatchInput {
+    pub code: String,
+    pub start_month: u8,
+    pub year: i32,
+    pub side: String, // 'LEFT' | 'RIGHT'
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+pub async fn open_dvo_batch(
+    input: OpenDvoBatchInput,
+    state: State<'_, AppState>,
+) -> Result<i64> {
+    if !(1..=12).contains(&input.start_month) {
+        return Err(CodoError::invalid("start_month must be 1..=12"));
+    }
+    if input.side != "LEFT" && input.side != "RIGHT" {
+        return Err(CodoError::invalid("side must be LEFT or RIGHT"));
+    }
+    let conn = fresh_conn(&state).await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO dvo_batch (code, warehouse_id, start_month, year, side, status, opened_at, notes, created_at, updated_at) VALUES (?, 3, ?, ?, ?, 'open', ?, ?, ?, ?)",
+        params![
+            input.code.trim().to_uppercase(),
+            input.start_month as i64,
+            input.year as i64,
+            input.side,
+            now.clone(),
+            input.notes,
+            now.clone(),
+            now,
+        ],
+    )
+    .await?;
+    let mut rows = conn
+        .query(
+            "SELECT id FROM dvo_batch WHERE code = ?",
+            params![input.code.trim().to_uppercase()],
+        )
+        .await?;
+    let r = rows
+        .next()
+        .await?
+        .ok_or_else(|| CodoError::internal("just-inserted dvo_batch not found"))?;
+    Ok(r.get(0)?)
+}
+
+/// Close a DVO batch — freezes transit + yield loss snapshots into the
+/// frozen_* columns and flips status to 'closed'. Per brain §7.16, this
+/// is operator-initiated only.
+#[tauri::command]
+pub async fn close_dvo_batch(
+    dvo_batch_id: i64,
+    closed_by: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let conn = fresh_conn(&state).await?;
+    let ledger = dvo_batch_ledger(&conn, dvo_batch_id).await?;
+    if ledger.batch.status == DvoBatchStatus::Closed {
+        return Err(CodoError::invalid("batch already closed"));
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE dvo_batch SET status = 'closed', closed_at = ?, closed_by = ?, frozen_transit_loss = ?, frozen_yield_loss = ?, updated_at = ? WHERE id = ?",
+        params![
+            now.clone(),
+            closed_by,
+            ledger.transit_loss.value,
+            ledger.yield_loss.value,
+            now,
+            dvo_batch_id,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetOpeningBalanceInput {
+    pub warehouse_code: String,
+    pub grade_code: String,
+    pub side: String, // 'LS' | 'RS'
+    pub period_start_date: String, // ISO YYYY-MM-DD
+    pub opening_flec_count: i64,
+    pub notes: Option<String>,
+}
+
+/// Per brain §7.9 the operator can re-set opening balance any time. UI
+/// just says 'as of today, balance is X' — no period concept exposed.
+/// codo writes a new row dated period_start_date (today by default);
+/// the ledger function picks the most-recent row dated ≤ start_date.
+#[tauri::command]
+pub async fn set_warehouse_opening_balance(
+    input: SetOpeningBalanceInput,
+    state: State<'_, AppState>,
+) -> Result<i64> {
+    if input.opening_flec_count < 0 {
+        return Err(CodoError::invalid("opening_flec_count must be >= 0"));
+    }
+    let warehouse = canonicalize_warehouse(&input.warehouse_code)?
+        .ok_or_else(|| CodoError::invalid("warehouse code is empty/invalid"))?;
+    let grade = canonicalize_grade(&input.grade_code)?;
+    let side = match input.side.trim().to_uppercase().as_str() {
+        "LS" => "LS",
+        "RS" => "RS",
+        _ => return Err(CodoError::invalid("side must be LS or RS")),
+    };
+    let _ = NaiveDate::parse_from_str(input.period_start_date.trim(), "%Y-%m-%d")
+        .map_err(|e| CodoError::invalid(format!("period_start_date must be ISO: {e}")))?;
+
+    let conn = fresh_conn(&state).await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let warehouse_id = match warehouse {
+        Warehouse::W1 => 1_i64,
+        Warehouse::W2 => 2,
+        Warehouse::W3 => 3,
+        Warehouse::W5 => 5,
+        Warehouse::W7 => 7,
+    };
+    let grade_id = match grade {
+        Grade::G3x50 => 1_i64,
+        Grade::G2x6 => 2,
+        Grade::G3p5 => 3,
+        Grade::G4x8 => 4,
+    };
+    conn.execute(
+        "INSERT INTO warehouse_opening_balance (warehouse_id, grade_id, side, period_start_date, opening_flec_count, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (warehouse_id, grade_id, side, period_start_date) DO UPDATE SET opening_flec_count = excluded.opening_flec_count, notes = excluded.notes, updated_at = excluded.updated_at",
+        params![
+            warehouse_id,
+            grade_id,
+            side,
+            input.period_start_date.trim(),
+            input.opening_flec_count,
+            input.notes,
+            now.clone(),
+            now,
+        ],
+    )
+    .await?;
+    let mut rows = conn
+        .query(
+            "SELECT id FROM warehouse_opening_balance WHERE warehouse_id = ? AND grade_id = ? AND side = ? AND period_start_date = ?",
+            params![warehouse_id, grade_id, side, input.period_start_date.trim()],
+        )
+        .await?;
+    let r = rows
+        .next()
+        .await?
+        .ok_or_else(|| CodoError::internal("opening balance row not found after upsert"))?;
+    Ok(r.get(0)?)
+}
+
+// keep the unused Plant + Shift + Side + DvoBatchSide imports out of the
+// dead-code warning cycle when these symbols aren't used directly.
+#[allow(dead_code)]
+fn _ledger_imports_keepalive(_: Plant, _: Shift, _: Side, _: DvoBatchSide) {}

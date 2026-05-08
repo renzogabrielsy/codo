@@ -85,6 +85,132 @@ export type SyncStatus = {
   pending_count: number;
 };
 
+// ---------------------------------------------------------------------------
+// Step 5 — warehouse + DVO ledger types.
+// ---------------------------------------------------------------------------
+
+export type RunBalComponents = {
+  opening: number;
+  flec_in_to_date: number;
+  flec_out_to_date: number;
+};
+
+export type FlecLedgerOpening = {
+  /** Rust enum serialized as the variant name string: 'G3x50' | 'G2x6' | 'G3p5' | 'G4x8' */
+  grade: string;
+  /** 'Ls' | 'Rs' */
+  side: string;
+  flec_count: number;
+  period_start_date: string; // ISO
+};
+
+export type FlecLedgerRow = {
+  event_id: number;
+  unique_tag: string;
+  recv_date: string;
+  prod_date: string | null;
+  source: string; // SourceCode variant name
+  grade: string; // Grade variant name
+  side: string | null; // Side variant or null
+  /** Disposition is serde-tagged. We model loosely; UI just uses raw_form. */
+  disposition: { kind: 'FlecBagging' } | { kind: 'PartnerCrusher'; equipment_code: number } | { kind: 'PartnerKiln'; equipment_code: number };
+  kg_in: number | null;
+  kg_out: number | null;
+  flec_in: number | null;
+  flec_out: number | null;
+  run_bal_flec: number;
+  run_bal_components: RunBalComponents;
+};
+
+export type CurrentBalance = {
+  grade: string;
+  side: string;
+  flec_count: number;
+  components: RunBalComponents;
+};
+
+export type FlecLedger = {
+  warehouse: string;
+  start_date: string;
+  opening_balances: FlecLedgerOpening[];
+  rows: FlecLedgerRow[];
+  current_balances: CurrentBalance[];
+  unsided_event_count: number;
+};
+
+export type DvoBatchSummary = {
+  id: number;
+  code: string;
+  year: number;
+  start_month: number;
+  /** 'LEFT' | 'RIGHT' */
+  side: string;
+  /** 'open' | 'closed' */
+  status: string;
+  opened_at: string;
+  closed_at: string | null;
+  receipt_count: number;
+  outflow_count: number;
+  frozen_transit_loss: number | null;
+  frozen_yield_loss: number | null;
+};
+
+export type WarehouseSummary = {
+  code: string;
+  default_unit: string; // 'flec_count' | 'kg'
+  total_flec: number | null;
+  last_event_date: string | null;
+  event_count: number;
+};
+
+export type DvoReceiptRow = {
+  id: number;
+  recv_date: string;
+  gothong_slip: string | null;
+  sack_count: number | null;
+  dvo_declared_weight_kg: number;
+  cebu_declared_weight_kg: number;
+  at_cebu_cy: boolean;
+};
+
+export type DvoOutflowRow = {
+  event_id: number;
+  unique_tag: string;
+  recv_date: string;
+  prod_date: string | null;
+  disposition: FlecLedgerRow['disposition'];
+  weight_kg: number;
+};
+
+export type DvoLedgerEvent =
+  | { kind: 'Receipt'; receipt: DvoReceiptRow; run_bal_kg: number }
+  | { kind: 'Outflow'; outflow: DvoOutflowRow; run_bal_kg: number };
+
+export type LossMetric = {
+  value: number;
+  numerator_kg: number;
+  denominator_kg: number;
+  frozen: boolean;
+};
+
+export type DvoBatchLedger = {
+  batch: {
+    id: number;
+    code: string;
+    year: number;
+    start_month: number;
+    side: string;
+    status: string;
+    opened_at: string;
+    closed_at: string | null;
+  };
+  receipts: DvoReceiptRow[];
+  outflows: DvoOutflowRow[];
+  interleaved: DvoLedgerEvent[];
+  transit_loss: LossMetric;
+  yield_loss: LossMetric;
+};
+
 export type ProductionEventRow = {
   id: number;
   recv_date: string;
