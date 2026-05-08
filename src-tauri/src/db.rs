@@ -4,6 +4,20 @@
 //! first; the local libSQL embedded replica picks them up on the next
 //! `db.sync()`. DDL applied only locally would be silently overwritten on the
 //! next pull.
+//!
+//! ⚠ DEVIATION FROM BRAIN §3 / §4.2: Turso has fully retired the embedded-
+//! replica sync protocol on the server side, with no alternative shipping in
+//! a stable libsql release as of 2026-05-08. Both libsql 0.6 and 0.9 fail
+//! handshake with 'deprecated version of sync'. We've temporarily switched
+//! to direct-remote connections — every read/write goes over the network.
+//! Offline-first behaviour comes back when Turso Sync (their replacement,
+//! still in beta) lands in a stable libsql release. Until then:
+//!   - cold reads are ~50-200ms over the internet rather than local
+//!   - codo cannot work when wifi is down
+//!   - the 'dirty flag' machinery (brain §8 #5) still belongs in the schema
+//!     because it'll matter again the moment we restore local-first sync
+//! See PROJECT_BRAIN.md §3 'libSQL embedded replica' row + §4.2 for the
+//! full architectural intent we're temporarily compromising.
 
 use crate::credentials::TursoCreds;
 use crate::error::{CodoError, Result};
@@ -106,24 +120,22 @@ pub async fn apply_to_remote(creds: &TursoCreds) -> Result<()> {
     run_migrations(&conn).await
 }
 
-/// Build a local libSQL embedded replica that auto-syncs to Turso. Returns the
-/// `Database` (so callers can hold it for `sync()`) and a freshly-opened
-/// `Connection`.
+/// Open a connection to the database. Per the deviation note at the top of
+/// this file, this is currently a DIRECT REMOTE connection — not an
+/// embedded replica. Returns the `Database` + `Connection` pair so callers
+/// can hold the database alive (the connection borrows from it).
 pub async fn open_local_replica(creds: &TursoCreds) -> Result<(Database, Connection)> {
-    let path = local_replica_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let db = Builder::new_remote_replica(path, creds.url.clone(), creds.token.clone())
+    let db = Builder::new_remote(creds.url.clone(), creds.token.clone())
         .build()
         .await?;
-    db.sync().await?;
     let conn = db.connect()?;
     Ok((db, conn))
 }
 
-/// Local replica path under the OS app-data dir.
+/// Local replica path under the OS app-data dir. Currently unused (we're on
+/// direct-remote per the deviation note). Kept for the eventual restoration
+/// of local-first sync.
+#[allow(dead_code)]
 pub fn local_replica_path() -> Result<PathBuf> {
     let base = match std::env::consts::OS {
         "macos" => {
