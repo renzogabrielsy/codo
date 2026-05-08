@@ -110,17 +110,50 @@ src-tauri/
     validity_matrix.rs            ← integration tests covering §7.1 cells
 ```
 
-## Local development
+## Two ways to run codo
+
+**Day-to-day: a real .app installed in /Applications.**
 
 ```bash
-# install JS deps
+# one-time: produce the .app and install it
 npm install
+npm run tauri:build
+cp -R src-tauri/target/release/bundle/macos/codo.app /Applications/
 
-# run Rust tests (canonicalize unit tests + validity-matrix integration tests)
-( cd src-tauri && cargo test )
+# from then on: open from Launchpad / Dock / Spotlight, like any app
+```
 
-# launch the desktop app in dev mode
+**Pull the latest from git and reinstall** (still.hobbies-style update):
+
+```bash
+./scripts/update_codo.sh           # ff-pulls the current branch
+./scripts/update_codo.sh main      # or check out + pull a specific branch first
+```
+
+The script ff-pulls, runs `npm install`, runs `npm run tauri:build`, replaces
+`/Applications/codo.app`, and relaunches. Cold rebuilds take ~5–10 min;
+warm rebuilds (only Rust source changed) ~1–2 min.
+
+Long-term goal: the in-app **Check for updates** flow via
+`tauri-plugin-updater` v2 + GitHub Releases. That needs an Apple Developer
+ID for code signing — see `PROJECT_BRAIN.md §3` (Build / packaging row)
+and `§5 #7` for the timing / cost. Until then, the script is the path.
+
+**Developer mode: hot-reload while editing.**
+
+```bash
 npm run tauri:dev
+```
+
+Boots vite + cargo run + opens a window pointing at the dev server. Edit
+a `.svelte` file → instant reload. Edit a `.rs` file → cargo rebuild +
+window relaunch. Useful while coding; not how you'd run codo for daily
+ops.
+
+## Tests
+
+```bash
+( cd src-tauri && cargo test )
 ```
 
 `cargo test` does not require a Turso connection — every test boots an
