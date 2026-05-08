@@ -24,19 +24,17 @@ tauri = { version = "2.6", features = [] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
-# libSQL — local embedded replica that auto-syncs to Turso cloud.
-# `replication` enables embedded-replica builders; `remote` enables direct-remote
-# connections used by the migration runner per PROJECT_BRAIN.md §5 #1.
-# `tls` is REQUIRED for remote/replica connections to libsql:// URLs — without
-# it, Builder::new_remote(...).build() panics inside a tokio worker with
-# 'must provide your own http connector', and the panic doesn't propagate to
-# the Tauri command (UI just hangs at "applying migrations…").
-#
-# Bumped from 0.6 → 0.9: Turso's server now rejects 0.6's sync protocol with
-# 'deprecated version of sync, please upgrade your client'. 0.9.x supports
-# the current sync protocol — this is the upgrade path the brain anticipated
-# in §3 'embedded replicas marked as legacy'.
-libsql = { version = "0.9", default-features = false, features = ["core", "remote", "replication", "tls"] }
+# libSQL — used in TWO modes:
+#   - `core`        → local SQLite primary store (Builder::new_local). All
+#                     reads + writes hit ~/Library/Application Support/codo/codo.db.
+#                     Stable, offline-capable, single-user-appropriate.
+#   - `remote+tls`  → cloud backup target (Builder::new_remote). Used only by
+#                     the manual Sync flow that pushes dirty rows to the Turso
+#                     DB. One-way push; no real bidirectional sync.
+# Dropped `replication` — Turso retired the embedded-replica protocol
+# server-side. Tried that path twice (libsql 0.6, libsql 0.9) before
+# settling on the local-first + manual-backup architecture in db.rs.
+libsql = { version = "0.9", default-features = false, features = ["core", "remote", "tls"] }
 
 # OS keyring (macOS Keychain / Windows Credential Manager / Linux Secret Service).
 # Per PROJECT_BRAIN.md §3 we may use stronghold OR keyring; the keyring crate is

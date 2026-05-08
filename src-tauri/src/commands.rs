@@ -77,46 +77,64 @@ pub async fn run_remote_migrations(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
-/// Build the runtime `Database` (currently direct-remote per the §3
-/// deviation; will become a libSQL embedded replica again when Turso Sync
-/// stabilizes). Stores the `Database` in `AppState`. Subsequent commands
-/// call `fresh_conn(&state)` to spin up a fresh `Connection` per request —
-/// stops stale streams from accumulating ('Hrana stream not found' after
-/// long idle periods).
+/// Open the local SQLite primary DB and run schema migrations + seeds.
+/// On first launch after the local-first swap, also runs a one-time
+/// bootstrap pull from the remote Turso DB so Renzo's existing test data
+/// survives the storage migration. Idempotent — calling again is cheap.
 #[tauri::command]
-pub async fn init_local_replica(state: State<'_, AppState>) -> Result<()> {
+pub async fn init_db(state: State<'_, AppState>) -> Result<()> {
     {
-        let db_guard = state.db.lock().await;
-        if db_guard.is_some() {
+        let guard = state.local_db.lock().await;
+        if guard.is_some() {
             return Ok(());
         }
     }
 
-    let creds: TursoCreds = credentials::require_via(&state).await?;
-    let (database, conn) = db::open_local_replica(&creds).await?;
-    // Defensive: ensure migrations are applied. Idempotent — `run_migrations`
-    // is a no-op when schema_version is already populated.
-    db::run_migrations(&conn).await?;
-    drop(conn); // we don't cache Connection — see fresh_conn() below
+    let local = db::open_local_db().await?;
 
-    let mut db_guard = state.db.lock().await;
-    *db_guard = Some(database);
+    // Bootstrap: if we have credentials AND local is empty, pull existing
+    // remote rows once. Best-effort — failure logs but doesn't block the
+    // boot path (offline-launch must work).
+    if let Ok(creds) = credentials::require_via(&state).await {
+        if let Err(e) = bootstrap_if_needed(&local, &creds).await {
+            tracing::warn!(error = %e, "bootstrap from remote failed (continuing offline)");
+        }
+    }
+
+    let mut guard = state.local_db.lock().await;
+    *guard = Some(local);
     Ok(())
 }
 
-/// Spin up a fresh `Connection` from the cached `Database`. Cheap (no
-/// network roundtrip on its own — `connect()` just allocates a new client-
-/// side stream ID; the actual HTTP call happens on the first query).
-///
-/// Use this everywhere a Tauri command needs DB access. Don't cache the
-/// returned Connection across awaits — fresh-per-command is the whole
-/// point of this helper.
+async fn bootstrap_if_needed(local: &libsql::Database, creds: &TursoCreds) -> Result<()> {
+    let local_conn = local.connect()?;
+    let remote = db::open_remote_db(creds).await?;
+    let remote_conn = remote.connect()?;
+    let pulled = db::bootstrap_local_from_remote(&local_conn, &remote_conn).await?;
+    if pulled > 0 {
+        tracing::info!(rows = pulled, "bootstrapped local DB from remote");
+    }
+    Ok(())
+}
+
+/// Spin up a fresh `Connection` from the cached LOCAL `Database`. Cheap —
+/// pure local file I/O, no network. Use this everywhere a Tauri command
+/// needs DB access. Don't cache across awaits — fresh-per-command is the
+/// whole point of this helper.
 async fn fresh_conn(state: &State<'_, AppState>) -> Result<libsql::Connection> {
-    let guard = state.db.lock().await;
+    let guard = state.local_db.lock().await;
     let db = guard
         .as_ref()
-        .ok_or_else(|| CodoError::internal("database not initialized"))?;
+        .ok_or_else(|| CodoError::internal("local database not initialized"))?;
     Ok(db.connect()?)
+}
+
+/// Build a fresh remote backup `Database` on demand. Used only by the
+/// manual sync path; rebuild cost is negligible (the actual network call
+/// happens at connect()/query time).
+async fn remote_db_handle(state: &State<'_, AppState>) -> Result<libsql::Database> {
+    let creds = credentials::require_via(state).await?;
+    db::open_remote_db(&creds).await
 }
 
 /// codo's compiled-in version. Used by the updater UI to show "you have X,
@@ -691,6 +709,31 @@ pub async fn list_recent_events(
         });
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Manual sync — push local dirty rows to the remote backup target.
+// ---------------------------------------------------------------------------
+
+/// Push every locally-changed row up to the Turso backup. Manual: invoked
+/// when the operator clicks Sync. Returns the count pushed and the
+/// timestamp it ran. Failures leave dirty=1 so the next attempt naturally
+/// retries.
+#[tauri::command]
+pub async fn sync_now(state: State<'_, AppState>) -> Result<db::SyncSummary> {
+    let local_conn = fresh_conn(&state).await?;
+    let remote = remote_db_handle(&state).await?;
+    let remote_conn = remote.connect()?;
+    db::sync_local_to_remote(&local_conn, &remote_conn).await
+}
+
+/// Read-only sync state for the UI. `last_synced_at` is null until the
+/// first successful sync. `pending_count` is the number of dirty rows
+/// waiting to push.
+#[tauri::command]
+pub async fn get_sync_status(state: State<'_, AppState>) -> Result<db::SyncStatus> {
+    let conn = fresh_conn(&state).await?;
+    db::sync_status(&conn).await
 }
 
 // ---------------------------------------------------------------------------

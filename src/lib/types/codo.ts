@@ -72,6 +72,19 @@ export type CreateProductionEventInput = {
   notes: string | null;
 };
 
+export type SyncSummary = {
+  pushed: number;
+  /** ISO 8601 timestamp the sync ran. */
+  last_synced_at: string;
+};
+
+export type SyncStatus = {
+  /** ISO 8601 timestamp of the last successful sync; null until the first. */
+  last_synced_at: string | null;
+  /** Count of locally-edited rows still waiting to push. */
+  pending_count: number;
+};
+
 export type ProductionEventRow = {
   id: number;
   recv_date: string;

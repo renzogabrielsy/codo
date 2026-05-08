@@ -4,6 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
+  import SyncStatus from '$lib/components/SyncStatus.svelte';
   import LogTable from '$lib/components/LogTable.svelte';
   import type { LookupBundle, ProductionEventRow } from '$lib/types/codo';
 
@@ -44,11 +45,8 @@
         return;
       }
 
-      state = { kind: 'loading', step: 'applying migrations to remote DB…' };
-      await invoke<void>('run_remote_migrations');
-
-      state = { kind: 'loading', step: 'opening connection…' };
-      await invoke<void>('init_local_replica');
+      state = { kind: 'loading', step: 'opening local database…' };
+      await invoke<void>('init_db');
 
       state = { kind: 'loading', step: 'loading lookups + recent events…' };
       const [version, lookups, recent] = await Promise.all([
@@ -120,12 +118,13 @@
     <!-- Unified log: input row IS the next row visually -->
     <LogTable lookups={state.lookups} rows={state.recent} onSaved={handleSaved} />
 
-    <!-- Updater (small panel at the bottom) -->
+    <!-- Maintenance: cloud backup (sync) + app updates -->
     <details class="text-xs">
       <summary class="cursor-pointer px-1 text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300">
         app maintenance
       </summary>
-      <div class="mt-2">
+      <div class="mt-2 space-y-2">
+        <SyncStatus />
         <UpdateChecker />
       </div>
     </details>

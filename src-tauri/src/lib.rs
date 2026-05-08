@@ -17,16 +17,21 @@ use tokio::sync::Mutex;
 
 /// Shared mutable app state.
 ///
-/// We cache `Database` (the libSQL builder result) but NOT a `Connection`.
-/// Each Tauri command spins up a fresh `Connection` via `db.connect()` so
-/// stale Hrana streams don't accumulate after long idle periods (Turso
-/// idle-times-out a stream after roughly an hour of no activity).
+/// `local_db` is the **primary** store — a local SQLite file at
+/// `~/Library/Application Support/codo/codo.db`. Every Tauri command reads
+/// and writes here. `db.connect()` per-command is cheap (no network).
 ///
-/// `creds` caches the chmod-600 file read so we don't re-read for every
-/// command (the file IS the source of truth, but in-memory is faster).
+/// `remote_db` is the cloud **backup** target — the existing Turso DB. Lazy:
+/// only built when the Sync flow needs it. Single-direction push.
+///
+/// `creds` caches the chmod-600 credentials file read.
+///
+/// We do NOT cache `Connection` — fresh-conn-per-command sidesteps stale
+/// streams (the Hrana 'stream not found' bug Renzo hit in direct-remote mode).
 #[derive(Default)]
 pub struct AppState {
-    pub db: Arc<Mutex<Option<libsql::Database>>>,
+    pub local_db: Arc<Mutex<Option<libsql::Database>>>,
+    pub remote_db: Arc<Mutex<Option<libsql::Database>>>,
     pub creds: Arc<Mutex<Option<TursoCreds>>>,
 }
 
@@ -47,13 +52,15 @@ pub fn run() {
             commands::is_onboarded,
             commands::onboard_turso,
             commands::run_remote_migrations,
-            commands::init_local_replica,
+            commands::init_db,
             commands::list_warehouses,
             commands::current_version,
             commands::list_lookups,
             commands::create_production_event,
             commands::create_production_events_bulk,
             commands::list_recent_events,
+            commands::sync_now,
+            commands::get_sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running codo");

@@ -112,7 +112,7 @@ This stack was verified by a focused web-research pass against the latest releas
 | **Shell** | **Tauri v2** (≥ 2.6) | Native window. ~5–10 MB binaries. Multi-platform. Real signed auto-updater. |
 | **Backend lang** | **Rust** (current stable) | Runs inside Tauri. Talks to libSQL. Renzo isn't expected to write Rust — just to read it. |
 | **DB client** | **`libsql` Rust crate** | Turso's official client. Mature. Embedded-replica support is first-class. |
-| **Local DB → cloud sync** | **DIRECT REMOTE for now → Turso embedded replica or Turso Sync later** | ⚠ **Updated 2026-05-08.** The original plan was to ship on libSQL embedded replicas. Reality during Step 2 onboarding: Turso's server fully retired the embedded-replica sync protocol (`'deprecated version of sync'` handshake error against both libsql 0.6 and 0.9). Turso Sync — the replacement — isn't shipping in stable libsql yet. So Step 2 forward, codo uses **direct-remote `Builder::new_remote(url, token)`** for everything. Trade-off: every read/write is ~50–200ms over the internet, and codo cannot work offline. Restoration path: when Turso Sync lands stable in libsql, swap the builder back to `new_remote_replica(path, ...)` + `db.sync()` — SQL surface is compatible. The `dirty` flag column on mutable rows stays in the schema for the eventual restoration. |
+| **Local DB + manual cloud backup** | **Local SQLite via `libsql 0.9` `Builder::new_local` (primary) + the existing Turso DB as a manual one-way backup target** | ⚠ **Updated 2026-05-08 (third revision).** History: planned embedded replicas (deprecated server-side, both libsql 0.6 and 0.9 fail handshake) → tried direct-remote (works but offline-broken) → tried evaluating the new `turso` crate's offline-sync (still public beta with documented data-loss caveats). Renzo's call: stability over shiny, single-user-for-now. So codo's primary store is now plain SQLite at `~/Library/Application Support/codo/codo.db`. Reads + writes are pure local file I/O. The existing Turso DB stays as the cloud BACKUP target — a manual "Sync now" button pushes `dirty=1` rows to the cloud one-way (INSERT OR IGNORE, then mark dirty=0 on success). On first launch after this swap, codo bootstrap-pulls existing remote rows so no data is lost. Forking to multi-user later reopens the door to Turso Sync (when GA) or a custom bidirectional layer. |
 | **Frontend framework** | **SvelteKit 2 + Svelte 5 (runes)**, in **SPA mode** via `@sveltejs/adapter-static` | No SSR (we're inside a webview). Root `+layout.ts` must export `ssr=false`, `prerender=false`. `svelte.config.js` uses `fallback: 'index.html'`. |
 | **Styling** | **Tailwind CSS v4** (via `@tailwindcss/vite`) | **Vite plugin order matters:** SvelteKit plugin first, Tailwind second, or class scanning silently breaks. Use `@reference "tailwindcss";` at the top of any `<style>` block that uses `@apply`. |
 | **UI components** | **shadcn-svelte** (Tailwind v4 + Svelte 5 fully supported) | Copy-paste components, you own the code. Looks like a real app. |
@@ -165,31 +165,46 @@ Enforcement:
 - README documents the "BYO database" setup: a new user clones, pastes their own Turso URL/token into the keyring on first launch.
 - Lookup seed data is structural (e.g. valid CCC/FLEC values), not transactional.
 
-### 4.2  Local-first with cloud mirror
+### 4.2  Local-first with manual cloud backup
 
-⚠ **Updated 2026-05-08.** This is the *intended* architecture; codo currently
-runs in **direct-remote-only** mode pending Turso Sync GA — see §3 stack
-table for the full reasoning. The bullets below describe both the current
-(temporary) state and the restoration target.
+⚠ **Updated 2026-05-08 (third revision, post-Renzo-pivot to single-user
+focus).** codo now runs LOCAL-FIRST with a MANUAL one-way cloud backup.
 
-**Currently (direct-remote, while Turso Sync stabilizes):**
-- The Turso DB is the only store. Every read and write is an HTTPS call.
-- If wifi dies, codo cannot record events. Plant-floor entry is blocked.
-- The dashboard read path and the email-funnel agent write path are unchanged
-  (they were always going to talk to remote).
+**Current (production):**
+- **Primary store**: plain SQLite at `~/Library/Application Support/codo/
+  codo.db` (macOS), opened via `libsql::Builder::new_local`. Every Tauri
+  command reads + writes here.
+- **All reads, all writes, all queries are offline by default.** Codo
+  launches and is fully usable with no internet.
+- **Cloud backup** = the existing Turso DB. Operator clicks **Sync now**;
+  codo pushes `dirty=1` rows up via `INSERT OR IGNORE`, marks them clean.
+  No automatic schedule; manual only (Renzo's call).
+- **First-launch bootstrap**: if local DB is empty AND remote has rows,
+  pull them all once. Idempotent.
+- **`dirty` flag column** is now load-bearing — every insert sets `dirty=1`,
+  successful sync sets `dirty=0`. Failed sync leaves the row dirty so the
+  next attempt naturally retries.
 
-**Target (when Turso Sync lands stable in libsql):**
-- Local SQLite (libSQL) becomes the canonical store for the operator. All reads and writes go local first.
-- `db.sync()` pushes local writes up and pulls remote changes down on a schedule (and on user-triggered "Sync Now").
-- If wifi dies, the operator keeps working. Sync resumes when connectivity returns.
-- The future management dashboard reads the **remote** Turso DB only — never the local file.
-- The future Claude email agent writes to the **remote** Turso DB. The desktop app pulls those rows into a "to review" inbox.
+**Trade-offs accepted:**
+- No real-time bidirectional sync. If multiple devices ever write
+  concurrently to the same Turso DB (multi-user future), conflicts can
+  silently desync — that's why we're explicitly single-user for now.
+- Cloud backup is only as fresh as the last manual click. Renzo's
+  responsibility to remember to sync.
+- The future management dashboard read path will be against the Turso DB
+  (which only has data through the last sync). For real-time dashboard
+  use, Renzo syncs frequently or we revisit when a multi-user fork
+  happens.
 
-**Schema artifacts that survive the transition:** the `dirty` flag column on
-`production_event` (and any other mutable table) stays in v1 — it's a
-no-op against direct-remote (we just always set it to 1) but becomes
-load-bearing again the moment local-first sync returns. Ledger functions
-are oblivious to the storage backend; same SQL.
+**Future (multi-user fork, deferred):**
+- Either Turso Sync (when it leaves beta with durability guarantees) or a
+  custom bidirectional sync layer.
+- Per-user identity columns + audit log + branch-scoped visibility.
+- See `§9` roadmap; this is post-MVP.
+
+**Schema artifacts**: the `dirty` flag is the lifeblood of the manual sync
+path. Ledger functions (Step 5) are oblivious to the storage backend —
+same SQL.
 
 ### 4.3  Single canonical event log + per-subsystem auxiliary ledgers
 
@@ -595,36 +610,109 @@ Bug ledger / friction during Step 2 (worth remembering):
 - libsql `default-features=false` requires explicit `tls` feature for remote connections, otherwise panics inside a tokio worker (UI hangs forever, no error propagation).
 - Turso server rejected libsql 0.6 AND 0.9 embedded-replica handshake. Direct-remote works fine.
 
-### Step 3 — First vertical slice
+### Step 3 — First vertical slice ✅ **DONE 2026-05-08**
 
 A single screen: "Log a production event." End-to-end through the whole stack.
-- SvelteKit form with superforms + zod validation, deriving `unique_tag` live as fields fill.
-- `invoke('create_production_event', payload)` to a Rust command.
-- Rust canonicalizes, validates, inserts into libSQL inside a transaction.
-- libSQL syncs to Turso.
-- Form returns success, list refreshes.
 
-### Step 4 — Excel data migration
+What shipped:
+- ✓ Unified Excel-style log table — input row IS the next row visually
+  (single `<table>` with editable draft rows on top + immutable history
+  below). Shipped in Phase 3A then iterated through 3B based on Renzo's
+  daily-driver feedback.
+- ✓ Drafts + History split: operator can stage many draft rows, hit
+  **Submit all (N)** to commit them in one transaction.
+- ✓ Bulk paste from Excel/Sheets (TSV/CSV) → validated + inserted in one
+  transaction via `create_production_events_bulk`.
+- ✓ Type-ahead via `<datalist>` on bounded-value cells (Source, Grade,
+  Disposition, etc.). Plain text date inputs ('5/8' / '5/8/26' / ISO).
+- ✓ Disposition collapsed into a single typeable cell (FLEC | C1..C4 |
+  RK1..RK4).
+- ✓ Row tinting by direction-of-flow: emerald for FLEC (we add to
+  inventory), purple for C1-C4/RK1-RK4 (CCC takes from us). Disposition
+  pill badge in the Dest column shows the specific equipment.
+- ✓ Color-pop on column accents (Grade=violet, Source=cyan, Warehouse=
+  amber) for visual scanability.
+- ✓ Light + dark theme toggle (class-based, persisted in localStorage,
+  defaults to system preference).
+- ✓ Font: IBM Plex Sans + Mono (industrial feel, bundled via @fontsource
+  for offline-first guarantee).
+- ✓ Rust commands: `list_lookups`, `create_production_event`,
+  `create_production_events_bulk`, `list_recent_events` (canonicalize →
+  §7.2 plant derivation → §7.1 validate → unique_tag → transactional
+  insert).
+- ✓ 50 tests green (24 validity-matrix + 6 insert-pipeline integration +
+  17 canonicalize/direction unit + 3 unique_tag-format unit).
 
-Output: `scripts/migrate_from_xlsb.py`. One-shot Python script. Reads `2025 CI PRODUCTION V2.xlsb`:
-- `Production` rows → `production_event`
-- `DVO IN` rows → `dvo_receipt` (with `dvo_batch` records implied/created from BATCH/SIDE codes)
+Bug ledger / friction during Step 3 (worth remembering):
+- macOS Keychain re-prompts on every Rust rebuild because each unsigned
+  binary has a different code signature → migrated credentials from
+  Keychain to a chmod-600 file under app-data dir.
+- Hrana 'stream not found' after long idle → switched from cached-
+  Connection to fresh-conn-per-command.
+- `.trim()` on Svelte's `<input type="number">` binding throws TypeError
+  (binding coerces to Number) → defensive `String()` coercion + outer
+  try/catch on submit so future binding-type bugs surface in the error
+  banner instead of crashing the handler silently.
+
+### Step 4 — Excel data migration *(next)*
+
+Output: `codo-migrate` Rust CLI binary in the same workspace (deviation
+from the brain's original Python script — codo's canonicalize / §7.1
+validate / unique_tag / insert pipeline lives in Rust, and re-implementing
+it in Python would invite drift). Reads `2025 CI PRODUCTION V2.xlsb` via
+the `calamine` crate; pipes each row through `codo_lib::commands::
+insert_production_event` against the local SQLite DB.
+
+What gets migrated:
+- `Production` rows → `production_event` (canonicalize at write; drift_log
+  any typos / cosmetic W6/W7 / unknown values)
+- `DVO IN` rows → `dvo_receipt` (with `dvo_batch` records implied from
+  BATCH/SIDE codes)
 - `PC WHSE *` STARTING blocks → `warehouse_opening_balance`
-- The 1 confirmed-mistake duplicate row → import one, drop the other into `drift_log`
+- The 1 confirmed-mistake duplicate row → import one, drop the other into
+  `drift_log` (kind=`unique_tag_collision`)
+
+After migration, Renzo runs **Sync now** to push the imported rows up to
+the cloud backup target.
 
 ### Step 5 — Warehouse + DVO ledger views
 
-Output: Rust `warehouse_ledger_flec` + `dvo_batch_ledger` functions + SvelteKit routes that call them and display the results with §4.7 information density. Lock-in tests asserting exact balances against fixtures.
+Output: Rust `warehouse_ledger_flec` + `dvo_batch_ledger` function bodies
+(stubs already exist) + SvelteKit routes that call them and display the
+results with §4.7 information density. Lock-in tests asserting exact
+balances against fixtures from the migrated workbook.
 
-### Step 6 — Iterate
+### Step 6 — KPIs + visualizations
+
+Today's totals, per-batch progress, per-warehouse running balance.
+Powered by Step 5's ledger functions for the running-balance numbers;
+simple SQL aggregations for the rest. Chart.js + Svelte 5 wrapper per §3.
+
+### Step 7 — Iterate
 
 Whichever screen hurts most in daily use comes next. Ask Renzo, don't guess.
 
-### Later (defer until asked)
+### Future / multi-user fork (deferred — single-user MVP for Renzo first)
 
-- Management dashboard URL — separate small app reading the same Turso DB.
-- Claude email-funnel agent — separate Python daemon. Anthropic SDK + Gmail API + `production_event_pending` writes.
-- RC Inventory module — separate workbook, separate schema-extraction pass, separate module.
+These aren't in scope for the personal-app MVP. They get bundled into a
+future fork when codo serves multiple users:
+
+- Per-user identity columns (`created_by_user`) + audit log
+- "Join existing workspace" onboarding tab + admin invite UX (mint
+  per-user DB tokens via Platform API)
+- Two-DB architecture (CI vs ICTC) — keep `AppState` shape ready for it
+- Branch-scoped visibility (CI users see only CI rows, etc.)
+- TouchID / Windows Hello unlock
+- Real bidirectional sync (revisit Turso Sync GA status, or build custom)
+- Admin panel (members, invites, audit log)
+
+### Even later (defer until asked)
+
+- Management dashboard URL — separate small app reading the Turso DB.
+  Backed by whatever the last manual sync pushed.
+- Claude email-funnel agent — separate Python daemon. Anthropic SDK +
+  Gmail API + `production_event_pending` writes.
+- RC Inventory module — separate workbook, separate schema-extraction pass.
 
 ---
 
