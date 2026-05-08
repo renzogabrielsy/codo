@@ -113,8 +113,11 @@
     lookups: LookupBundle;
     rows: ProductionEventRow[];
     onSaved: (rows: ProductionEventRow[]) => void;
+    /** When set (via /?event=ID), the table clears filters, jumps to the
+     *  page containing this row, expands it, and highlights briefly. */
+    focusEventId?: number | null;
   };
-  let { lookups, rows, onSaved }: Props = $props();
+  let { lookups, rows, onSaved, focusEventId = null }: Props = $props();
 
   // -------------------------------------------------------------------------
   // History data-grid state: filter / sort / paginate. Client-side because
@@ -290,6 +293,34 @@
       : `${sortedRows.length} of ${rows.length}`
   );
 
+  // Deep-link via ?event=ID — when set, clear filters, find the row in the
+  // sorted set, jump to the page that contains it, expand it, and briefly
+  // highlight. Cleared on any user-driven filter change.
+  let highlightedEventId = $state<number | null>(null);
+  $effect(() => {
+    if (focusEventId == null) return;
+    // Clear filters so the row is reachable.
+    filterSources = new Set();
+    filterGrades = new Set();
+    filterDispositions = new Set();
+    filterWarehouses = new Set();
+    filterDateFrom = '';
+    filterDateTo = '';
+    filterBatch = '';
+    globalSearch = '';
+    // Find index in current sorted set.
+    const idx = sortedRows.findIndex((r) => r.id === focusEventId);
+    if (idx < 0) return;
+    if (pageSize > 0) pageIndex = Math.floor(idx / pageSize);
+    expandedRowId = focusEventId;
+    highlightedEventId = focusEventId;
+    // Auto-clear the highlight after a few seconds so it doesn't linger.
+    const t = setTimeout(() => {
+      if (highlightedEventId === focusEventId) highlightedEventId = null;
+    }, 4000);
+    return () => clearTimeout(t);
+  });
+
   // CSV export of the currently filtered+sorted set.
   function exportCsv() {
     const headers = [
@@ -326,6 +357,25 @@
   const distinctWarehouses = $derived(
     [...new Set(rows.map((r) => r.warehouse_code).filter((w): w is string => w !== null))].sort()
   );
+
+  /** Svelte action: scroll this row into view when its id matches the
+   *  highlight target. Used for the /?event=ID deep-link handoff from
+   *  the warehouse ledger pages. */
+  function scrollIntoViewIfFocused(
+    node: HTMLElement,
+    arg: { rowId: number; focusedId: number | null }
+  ) {
+    if (arg.rowId === arg.focusedId) {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return {
+      update(next: { rowId: number; focusedId: number | null }) {
+        if (next.rowId === next.focusedId) {
+          node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    };
+  }
 
   // -------------------------------------------------------------------------
   // Drafts: editable rows the operator stages BEFORE pressing Submit all.
@@ -1154,7 +1204,10 @@
             <tr
               class="border-t border-neutral-200 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/40 text-neutral-800 dark:text-neutral-300 cursor-pointer {rowTintByKind(
                 row.disposition_kind
-              )}"
+              )} {highlightedEventId === row.id
+                ? 'ring-2 ring-emerald-500 dark:ring-emerald-400 bg-emerald-100/60 dark:bg-emerald-900/40 animate-pulse'
+                : ''}"
+              use:scrollIntoViewIfFocused={{ rowId: row.id, focusedId: highlightedEventId }}
               onclick={() => (expandedRowId = expandedRowId === row.id ? null : row.id)}
             >
               <td></td>

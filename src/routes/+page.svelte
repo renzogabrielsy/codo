@@ -1,12 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/state';
   import { invoke } from '@tauri-apps/api/core';
   import Onboarding from '$lib/components/Onboarding.svelte';
   import UpdateChecker from '$lib/components/UpdateChecker.svelte';
   import SyncStatus from '$lib/components/SyncStatus.svelte';
   import LogTable from '$lib/components/LogTable.svelte';
+  import ProductionCharts from '$lib/components/ProductionCharts.svelte';
   import TopNav from '$lib/components/TopNav.svelte';
   import type { LookupBundle, ProductionEventRow } from '$lib/types/codo';
+
+  // ?event=ID URL param: ledger views (FlecLedgerView, DvoBatchView) link
+  // back to /?event=N when the user clicks an event in the ledger. We pass
+  // it down to LogTable, which clears all filters, jumps to the page
+  // containing the row, and briefly highlights it.
+  const focusEventId = $derived.by(() => {
+    const v = page.url.searchParams.get('event');
+    if (!v) return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  });
 
   type BootState =
     | { kind: 'loading'; step: string }
@@ -82,8 +95,23 @@
 {:else if state.kind === 'ready'}
   <TopNav version={state.version} />
   <main class="min-h-screen w-full flex flex-col gap-3 px-4 py-3">
+    <!-- Production summary charts (collapsible to save vertical space) -->
+    <details class="text-xs">
+      <summary class="cursor-pointer px-1 text-neutral-700 dark:text-neutral-300 hover:text-emerald-700 dark:hover:text-emerald-400 font-medium">
+        ▾ Production summary (charts)
+      </summary>
+      <div class="mt-2">
+        <ProductionCharts rows={state.recent} />
+      </div>
+    </details>
+
     <!-- Unified log: input row IS the next row visually -->
-    <LogTable lookups={state.lookups} rows={state.recent} onSaved={handleSaved} />
+    <LogTable
+      lookups={state.lookups}
+      rows={state.recent}
+      onSaved={handleSaved}
+      {focusEventId}
+    />
 
     <!-- Maintenance: cloud backup (sync) + app updates -->
     <details class="text-xs">
