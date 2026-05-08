@@ -15,15 +15,18 @@ use crate::credentials::TursoCreds;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Shared mutable app state. Holds the libSQL connection AND a cached copy
-/// of the Turso credentials — see `credentials.rs` for why caching matters
-/// (macOS Keychain prompts every read on unsigned dev binaries).
+/// Shared mutable app state.
+///
+/// We cache `Database` (the libSQL builder result) but NOT a `Connection`.
+/// Each Tauri command spins up a fresh `Connection` via `db.connect()` so
+/// stale Hrana streams don't accumulate after long idle periods (Turso
+/// idle-times-out a stream after roughly an hour of no activity).
+///
+/// `creds` caches the chmod-600 file read so we don't re-read for every
+/// command (the file IS the source of truth, but in-memory is faster).
 #[derive(Default)]
 pub struct AppState {
-    pub conn: Arc<Mutex<Option<libsql::Connection>>>,
     pub db: Arc<Mutex<Option<libsql::Database>>>,
-    /// Cached after the first successful Keychain read of the session.
-    /// Cleared by `credentials::clear()` if the operator ever wants to rotate.
     pub creds: Arc<Mutex<Option<TursoCreds>>>,
 }
 

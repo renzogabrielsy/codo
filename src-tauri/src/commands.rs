@@ -77,31 +77,46 @@ pub async fn run_remote_migrations(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
-/// Open the runtime DB connection (currently direct-remote per the §3
+/// Build the runtime `Database` (currently direct-remote per the §3
 /// deviation; will become a libSQL embedded replica again when Turso Sync
-/// stabilizes). Stores the connection in `AppState`.
+/// stabilizes). Stores the `Database` in `AppState`. Subsequent commands
+/// call `fresh_conn(&state)` to spin up a fresh `Connection` per request —
+/// stops stale streams from accumulating ('Hrana stream not found' after
+/// long idle periods).
 #[tauri::command]
 pub async fn init_local_replica(state: State<'_, AppState>) -> Result<()> {
-    // If the connection is already open this session, skip reopening — saves
-    // a network roundtrip on every boot resume after the first.
     {
-        let conn_guard = state.conn.lock().await;
-        if conn_guard.is_some() {
+        let db_guard = state.db.lock().await;
+        if db_guard.is_some() {
             return Ok(());
         }
     }
 
     let creds: TursoCreds = credentials::require_via(&state).await?;
     let (database, conn) = db::open_local_replica(&creds).await?;
-    // Defensive: ensure migrations are applied against the connection codo
-    // will use. Idempotent (run_migrations checks schema_version).
+    // Defensive: ensure migrations are applied. Idempotent — `run_migrations`
+    // is a no-op when schema_version is already populated.
     db::run_migrations(&conn).await?;
+    drop(conn); // we don't cache Connection — see fresh_conn() below
 
-    let mut conn_guard = state.conn.lock().await;
-    *conn_guard = Some(conn);
     let mut db_guard = state.db.lock().await;
     *db_guard = Some(database);
     Ok(())
+}
+
+/// Spin up a fresh `Connection` from the cached `Database`. Cheap (no
+/// network roundtrip on its own — `connect()` just allocates a new client-
+/// side stream ID; the actual HTTP call happens on the first query).
+///
+/// Use this everywhere a Tauri command needs DB access. Don't cache the
+/// returned Connection across awaits — fresh-per-command is the whole
+/// point of this helper.
+async fn fresh_conn(state: &State<'_, AppState>) -> Result<libsql::Connection> {
+    let guard = state.db.lock().await;
+    let db = guard
+        .as_ref()
+        .ok_or_else(|| CodoError::internal("database not initialized"))?;
+    Ok(db.connect()?)
 }
 
 /// codo's compiled-in version. Used by the updater UI to show "you have X,
@@ -121,11 +136,7 @@ pub struct WarehouseRow {
 /// Tiny demo command — proves the connection works and the seed landed.
 #[tauri::command]
 pub async fn list_warehouses(state: State<'_, AppState>) -> Result<Vec<WarehouseRow>> {
-    let guard = state.conn.lock().await;
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| CodoError::internal("connection not initialized"))?;
-
+    let conn = fresh_conn(&state).await?;
     let mut rows = conn
         .query(
             "SELECT id, code, default_unit FROM warehouse ORDER BY id",
@@ -195,10 +206,7 @@ pub struct PartnerEquipmentRow {
 /// Loads every lookup table the form needs in a single Tauri command.
 #[tauri::command]
 pub async fn list_lookups(state: State<'_, AppState>) -> Result<LookupBundle> {
-    let guard = state.conn.lock().await;
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| CodoError::internal("connection not initialized"))?;
+    let conn = fresh_conn(&state).await?;
 
     let shifts = {
         let mut rows = conn
@@ -381,11 +389,8 @@ pub async fn create_production_event(
     input: CreateProductionEventInput,
     state: State<'_, AppState>,
 ) -> Result<ProductionEventRow> {
-    let guard = state.conn.lock().await;
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| CodoError::internal("connection not initialized"))?;
-    insert_production_event(conn, &input).await
+    let conn = fresh_conn(&state).await?;
+    insert_production_event(&conn, &input).await
 }
 
 /// Pure-of-Tauri version of `create_production_event` — the command above
@@ -569,11 +574,6 @@ pub async fn create_production_events_bulk(
     inputs: Vec<CreateProductionEventInput>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ProductionEventRow>> {
-    let guard = state.conn.lock().await;
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| CodoError::internal("connection not initialized"))?;
-
     if inputs.is_empty() {
         return Ok(Vec::new());
     }
@@ -586,9 +586,10 @@ pub async fn create_production_events_bulk(
         }
     }
 
+    let conn = fresh_conn(&state).await?;
     let mut inserted = Vec::with_capacity(inputs.len());
     for (i, input) in inputs.iter().enumerate() {
-        match insert_production_event(conn, input).await {
+        match insert_production_event(&conn, input).await {
             Ok(row) => inserted.push(row),
             Err(e) => {
                 // libSQL doesn't expose explicit transaction rollback to
@@ -647,12 +648,7 @@ pub async fn list_recent_events(
     state: State<'_, AppState>,
 ) -> Result<Vec<ProductionEventRow>> {
     let limit = limit.unwrap_or(20).clamp(1, 200);
-
-    let guard = state.conn.lock().await;
-    let conn = guard
-        .as_ref()
-        .ok_or_else(|| CodoError::internal("connection not initialized"))?;
-
+    let conn = fresh_conn(&state).await?;
     let mut rows = conn
         .query(
             "SELECT pe.id, pe.recv_date, pe.prod_date, pe.batch,
