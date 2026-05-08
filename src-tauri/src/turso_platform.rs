@@ -36,17 +36,22 @@ pub struct OnboardingResult {
 /// DB-level URL + token (which the caller writes to the keyring), plus the
 /// resolved org and database name for display.
 pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
+    // Aggressively normalize the token: strip ALL whitespace (including
+    // non-breaking spaces and zero-width characters that can survive a
+    // JS-side .trim() if the operator pasted from a styled webpage).
+    let token = sanitize_token(&req.platform_token)?;
+
     let client = reqwest::Client::builder()
         .user_agent(concat!("codo/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     // 1. Resolve the user's organization. The Platform API exposes the user's
     //    "personal" org by default; named orgs require an explicit slug.
-    let org_slug = pick_org(&client, &req.platform_token).await?;
+    let org_slug = pick_org(&client, &token).await?;
 
     // 2. Create the database (auto-suffix on name collision).
     let create_resp =
-        create_database_with_retry(&client, &req.platform_token, &org_slug, &req.db_name).await?;
+        create_database_with_retry(&client, &token, &org_slug, &req.db_name).await?;
     let final_db_name = create_resp.name;
     // Turso's create-DB response carries the canonical `Hostname` for the
     // libSQL endpoint. Fall back to the org-slug-derived form if the API
@@ -56,7 +61,7 @@ pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
         .unwrap_or_else(|| format!("{final_db_name}-{org_slug}.turso.io"));
 
     // 3. Mint a database-level auth token.
-    let db_token = mint_db_token(&client, &req.platform_token, &org_slug, &final_db_name).await?;
+    let db_token = mint_db_token(&client, &token, &org_slug, &final_db_name).await?;
 
     let db_url = format!("libsql://{hostname}");
 
@@ -68,6 +73,47 @@ pub async fn onboard(req: OnboardingRequest) -> Result<OnboardingResult> {
         org_slug,
         final_db_name,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Token sanitization. JS-side `.trim()` only handles standard whitespace.
+// Tokens copy-pasted from a styled webpage can carry non-breaking spaces,
+// zero-width joiners, or other invisible characters that survive trim().
+// Strip every Unicode whitespace + control char and verify the result still
+// looks like a JWT (header.payload.signature).
+// ---------------------------------------------------------------------------
+
+fn sanitize_token(raw: &str) -> Result<String> {
+    // Drop every whitespace + control char (NBSP \u{00A0}, ZWSP \u{200B},
+    // BOM \u{FEFF}, regular spaces/newlines/tabs).
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect();
+
+    if cleaned.is_empty() {
+        return Err(CodoError::invalid("platform token is required"));
+    }
+
+    let segments: Vec<&str> = cleaned.split('.').collect();
+    if segments.len() != 3 {
+        return Err(CodoError::invalid(format!(
+            "platform token doesn't look like a JWT — expected exactly 3 \
+             dot-separated segments, got {}. Did you paste the wrong field, \
+             or is there extra whitespace? (cleaned length: {} chars)",
+            segments.len(),
+            cleaned.len()
+        )));
+    }
+    if !cleaned.starts_with("eyJ") {
+        return Err(CodoError::invalid(
+            "platform token doesn't look like a JWT — expected to start with \
+             'eyJ'. Make sure you're copying from Account Settings → API \
+             Tokens, and copying the whole token, not the token's name.",
+        ));
+    }
+
+    Ok(cleaned)
 }
 
 // ---------------------------------------------------------------------------
