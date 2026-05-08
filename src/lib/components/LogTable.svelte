@@ -17,6 +17,21 @@
     if (row.disposition_kind === 'flec_bagging') return 'FLEC';
     return row.partner_equipment_code ?? '?';
   }
+  /** Disposition pill colour by kind — emerald FLEC / sky Crusher / amber Kiln. */
+  export function dispositionBadgeClass(row: { disposition_kind: string }): string {
+    const base =
+      'inline-block rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider';
+    switch (row.disposition_kind) {
+      case 'flec_bagging':
+        return `${base} bg-emerald-700/40 text-emerald-200 border border-emerald-600/40`;
+      case 'partner_crusher':
+        return `${base} bg-sky-700/40 text-sky-200 border border-sky-600/40`;
+      case 'partner_kiln':
+        return `${base} bg-amber-700/40 text-amber-200 border border-amber-600/40`;
+      default:
+        return `${base} bg-neutral-700/40 text-neutral-200`;
+    }
+  }
 </script>
 
 <script lang="ts">
@@ -43,10 +58,16 @@
   function todayIso(): string {
     return new Date().toISOString().slice(0, 10);
   }
+  function currentMonthName(): string {
+    return new Date()
+      .toLocaleString('en-US', { month: 'long' })
+      .toUpperCase();
+  }
 
+  // Sensible defaults — only WT and FLEC need typing on a typical entry.
   let recvDate = $state(todayIso());
   let prodDate = $state(todayIso());
-  let batch = $state('');
+  let batch = $state(currentMonthName()); // e.g. "MAY"
   let shiftCode = $state('M');
   let gradeCode = $state('');
   let sourceCode = $state('');
@@ -316,44 +337,58 @@
     </div>
   </div>
 
+  <!-- Top-of-table error banner. Loud red so a missed-required-field doesn't
+       fall through silently. -->
+  {#if err}
+    <div class="px-3 py-2 text-xs text-red-100 bg-red-900/60 border-b border-red-700 font-mono">
+      ⚠ {err}
+    </div>
+  {/if}
+
   <div class="overflow-x-auto">
     <table class="w-full text-xs font-mono">
       <colgroup>
-        <col style="width: 60px" /><!-- RECV -->
-        <col style="width: 60px" /><!-- PROD -->
-        <col style="width: 90px" /><!-- BATCH -->
-        <col style="width: 38px" /><!-- SH -->
-        <col style="width: 60px" /><!-- GRD -->
-        <col style="width: 70px" /><!-- SRC -->
-        <col style="width: 60px" /><!-- PLT -->
-        <col style="width: 75px" /><!-- WHSE -->
-        <col style="width: 38px" /><!-- SD -->
-        <col style="width: 75px" /><!-- WT -->
-        <col style="width: 55px" /><!-- FLEC -->
-        <col style="width: 60px" /><!-- DISP -->
+        <col style="width: 24px" /><!-- + indicator -->
+        <col style="width: 64px" /><!-- RECV -->
+        <col style="width: 64px" /><!-- PROD -->
+        <col style="width: 100px" /><!-- BATCH -->
+        <col style="width: 44px" /><!-- SH -->
+        <col style="width: 70px" /><!-- GRADE -->
+        <col style="width: 76px" /><!-- SOURCE -->
+        <col style="width: 62px" /><!-- PLANT -->
+        <col style="width: 80px" /><!-- WAREHOUSE -->
+        <col style="width: 56px" /><!-- SIDE  ← was 38, clipping LS/RS -->
+        <col style="width: 90px" /><!-- WEIGHT -->
+        <col style="width: 60px" /><!-- FLEC -->
+        <col style="width: 70px" /><!-- DEST (DISP) -->
         <col /><!-- NOTES (flex) -->
+        <col style="width: 92px" /><!-- ACTION button column -->
       </colgroup>
-      <thead class="bg-neutral-900/50 text-neutral-500">
+      <thead class="bg-neutral-900 text-neutral-300 text-[11px] uppercase tracking-wider">
         <tr>
-          <th class="px-2 py-1 text-left font-normal">RECV</th>
-          <th class="px-2 py-1 text-left font-normal">PROD</th>
-          <th class="px-2 py-1 text-left font-normal">BATCH</th>
-          <th class="px-2 py-1 text-left font-normal">SH</th>
-          <th class="px-2 py-1 text-left font-normal">GRD</th>
-          <th class="px-2 py-1 text-left font-normal">SRC</th>
-          <th class="px-2 py-1 text-left font-normal">PLT</th>
-          <th class="px-2 py-1 text-left font-normal">WHSE</th>
-          <th class="px-2 py-1 text-left font-normal">SD</th>
-          <th class="px-2 py-1 text-right font-normal">WT</th>
-          <th class="px-2 py-1 text-right font-normal">FLEC</th>
-          <th class="px-2 py-1 text-left font-normal">DISP</th>
-          <th class="px-2 py-1 text-left font-normal">NOTES</th>
+          <th></th>
+          <th class="px-2 py-1.5 text-left font-medium">Recv</th>
+          <th class="px-2 py-1.5 text-left font-medium">Prod</th>
+          <th class="px-2 py-1.5 text-left font-medium">Batch</th>
+          <th class="px-2 py-1.5 text-left font-medium">Shift</th>
+          <th class="px-2 py-1.5 text-left font-medium">Grade</th>
+          <th class="px-2 py-1.5 text-left font-medium">Source</th>
+          <th class="px-2 py-1.5 text-left font-medium">Plant</th>
+          <th class="px-2 py-1.5 text-left font-medium">Warehouse</th>
+          <th class="px-2 py-1.5 text-left font-medium">Side</th>
+          <th class="px-2 py-1.5 text-right font-medium">Weight kg</th>
+          <th class="px-2 py-1.5 text-right font-medium">Flec</th>
+          <th class="px-2 py-1.5 text-left font-medium">Dest</th>
+          <th class="px-2 py-1.5 text-left font-medium">Notes</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
-        <!-- INPUT ROW: visually IS the next event. Sticky on top so you don't scroll. -->
-        <tr class="bg-neutral-900/70 border-y border-emerald-900/40">
-          <td class="px-1 py-0.5">
+        <!-- INPUT ROW: visually IS the next event. Loud emerald accent so
+             the operator can't miss where to type. -->
+        <tr class="bg-emerald-950/40 border-y-2 border-emerald-500/60">
+          <td class="px-1 text-center text-emerald-400 font-bold">+</td>
+          <td class="px-1 py-1">
             <input
               type="date"
               bind:value={recvDate}
@@ -361,7 +396,7 @@
               class="cell-input"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="date"
               bind:value={prodDate}
@@ -369,16 +404,16 @@
               class="cell-input"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={batch}
               onkeydown={onCellKey}
               placeholder="MAY"
-              class="cell-input uppercase"
+              class="cell-input uppercase text-neutral-100"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={shiftCode}
@@ -388,35 +423,35 @@
               class="cell-input uppercase"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={gradeCode}
               onkeydown={onCellKey}
               list="dl-grades"
               placeholder="3X50"
-              class="cell-input uppercase"
+              class="cell-input uppercase text-violet-300"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={sourceCode}
               onkeydown={onCellKey}
               list="dl-sources"
               placeholder="TNK 1"
-              class="cell-input uppercase"
+              class="cell-input uppercase text-cyan-300"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             {#if sourceForcesPlant}
               <input
                 type="text"
                 value={forcedPlantCode}
                 readonly
                 tabindex="-1"
-                title="forced by source per §7.2"
-                class="cell-input text-neutral-500 cursor-default"
+                title="auto from source"
+                class="cell-input text-neutral-500 cursor-default italic"
               />
             {:else}
               <input
@@ -429,17 +464,17 @@
               />
             {/if}
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={warehouseCode}
               onkeydown={onCellKey}
               list="dl-warehouses"
               placeholder="—"
-              class="cell-input uppercase"
+              class="cell-input uppercase text-amber-300"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={whseSide}
@@ -449,7 +484,7 @@
               class="cell-input uppercase"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="number"
               bind:value={weightStr}
@@ -458,10 +493,10 @@
               step="0.01"
               min="0"
               placeholder="0"
-              class="cell-input text-right"
+              class="cell-input text-right text-neutral-50 font-semibold"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="number"
               bind:value={flecStr}
@@ -472,52 +507,69 @@
               class="cell-input text-right"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={dispositionRaw}
               onkeydown={onCellKey}
               list="dl-disposition"
               placeholder="FLEC"
-              class="cell-input uppercase"
+              class="cell-input uppercase text-pink-300"
             />
           </td>
-          <td class="px-1 py-0.5">
+          <td class="px-1 py-1">
             <input
               type="text"
               bind:value={notes}
               onkeydown={onCellKey}
-              placeholder=""
+              placeholder="optional"
               class="cell-input"
             />
+          </td>
+          <td class="px-1 py-0.5">
+            <button
+              type="button"
+              onclick={submit}
+              disabled={submitting}
+              title="press Enter or click to add row"
+              class="w-full rounded bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-neutral-950 font-semibold px-2 py-1 disabled:opacity-50 transition"
+            >
+              {submitting ? '…' : '+ Add ↵'}
+            </button>
           </td>
         </tr>
 
         <!-- HISTORICAL ROWS -->
         {#if rows.length === 0}
           <tr>
-            <td colspan="13" class="px-3 py-4 text-center text-neutral-500">
-              no events yet — type into the row above and press Enter
+            <td colspan="15" class="px-3 py-4 text-center text-neutral-500 italic">
+              no events yet — type into the green row above and press <kbd class="px-1 bg-neutral-800 rounded">Enter</kbd>
             </td>
           </tr>
         {:else}
           {#each rows as row (row.id)}
             <tr class="border-t border-neutral-900 hover:bg-neutral-900/40 text-neutral-300">
-              <td class="px-2 py-1">{fmtDate(row.recv_date)}</td>
+              <td></td>
+              <td class="px-2 py-1 text-neutral-200">{fmtDate(row.recv_date)}</td>
               <td class="px-2 py-1 text-neutral-500">{fmtDate(row.prod_date)}</td>
-              <td class="px-2 py-1">{row.batch}</td>
-              <td class="px-2 py-1">{row.shift_code ?? ''}</td>
-              <td class="px-2 py-1">{row.grade_code}</td>
-              <td class="px-2 py-1">{row.source_code}</td>
-              <td class="px-2 py-1 text-neutral-500">{row.plant_code ?? ''}</td>
-              <td class="px-2 py-1">{row.warehouse_code ?? ''}</td>
+              <td class="px-2 py-1 text-neutral-300">{row.batch}</td>
+              <td class="px-2 py-1 text-neutral-300">{row.shift_code ?? ''}</td>
+              <td class="px-2 py-1 text-violet-300">{row.grade_code}</td>
+              <td class="px-2 py-1 text-cyan-300">{row.source_code}</td>
+              <td class="px-2 py-1 text-neutral-500 italic">{row.plant_code ?? ''}</td>
+              <td class="px-2 py-1 text-amber-300">{row.warehouse_code ?? ''}</td>
               <td class="px-2 py-1">{row.whse_side ?? ''}</td>
-              <td class="px-2 py-1 text-right">{fmtKg(row.weight_kg)}</td>
-              <td class="px-2 py-1 text-right">{row.flec_count ?? ''}</td>
-              <td class="px-2 py-1">{disp(row)}</td>
+              <td class="px-2 py-1 text-right text-neutral-100 font-semibold">
+                {fmtKg(row.weight_kg)}
+              </td>
+              <td class="px-2 py-1 text-right text-neutral-300">{row.flec_count ?? ''}</td>
+              <td class="px-2 py-1">
+                <span class={dispositionBadgeClass(row)}>{disp(row)}</span>
+              </td>
               <td class="px-2 py-1 text-neutral-500 truncate" title={row.notes ?? ''}>
                 {row.notes ?? ''}
               </td>
+              <td></td>
             </tr>
           {/each}
         {/if}
@@ -548,37 +600,19 @@
     {#each dispositionOptions as d}<option value={d}></option>{/each}
   </datalist>
 
-  {#if err}
-    <div class="px-3 py-1.5 text-xs text-red-300 font-mono border-t border-red-900/40 bg-red-950/30">
-      {err}
+  <div class="flex items-center justify-between px-3 py-1.5 border-t border-neutral-800 text-xs text-neutral-600 font-mono">
+    <div class="flex items-center gap-3">
+      <span><kbd class="px-1 bg-neutral-800 rounded">↵</kbd> add row</span>
+      <span><kbd class="px-1 bg-neutral-800 rounded">esc</kbd> clear</span>
+      <span><kbd class="px-1 bg-neutral-800 rounded">tab</kbd> next cell</span>
     </div>
-  {/if}
-
-  <div class="flex items-center justify-between px-3 py-1.5 border-t border-neutral-800 text-xs">
-    <div class="flex items-center gap-2 text-neutral-600 font-mono">
-      <span>↵ submit</span>
-      <span>·</span>
-      <span>esc clear</span>
-      <span>·</span>
-      <span>tab next cell</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <button
-        type="button"
-        onclick={clearEditable}
-        class="rounded border border-neutral-800 hover:border-neutral-700 px-2 py-0.5 text-neutral-400 hover:text-neutral-200"
-      >
-        Clear
-      </button>
-      <button
-        type="button"
-        onclick={submit}
-        disabled={submitting}
-        class="rounded bg-emerald-700 hover:bg-emerald-600 px-3 py-1 text-neutral-50 font-medium disabled:opacity-50"
-      >
-        {submitting ? 'saving…' : 'Submit'}
-      </button>
-    </div>
+    <button
+      type="button"
+      onclick={clearEditable}
+      class="rounded border border-neutral-800 hover:border-neutral-700 px-2 py-0.5 text-neutral-400 hover:text-neutral-200"
+    >
+      Clear
+    </button>
   </div>
 
   <!-- Bulk paste panel -->
