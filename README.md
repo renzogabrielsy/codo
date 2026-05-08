@@ -127,23 +127,22 @@ cp -R src-tauri/target/release/bundle/macos/codo.app /Applications/
 
 Open codo → click **Check for updates** in the Hello panel. codo queries
 `https://github.com/renzogabrielsy/codo/releases/latest/download/latest.json`,
-compares against the running version, downloads + verifies + swaps the
-binary, then relaunches. Update payloads are signed with a self-managed
-minisign keypair — the public key is embedded in `tauri.conf.json`, the
-private key lives only in your Mac's `~/.tauri/codo.key` and as a GitHub
-Actions secret.
+compares against the running version, downloads + verifies the signature +
+swaps the binary, then relaunches. Update payloads are signed with a
+self-managed minisign keypair — the public key is embedded in
+`tauri.conf.json`, the private key lives only on the operator's Mac at
+`~/.tauri/codo.key`.
 
 To cut a release:
 
 ```bash
-git tag v0.0.2
-git push origin v0.0.2
-# GitHub Actions builds + signs + creates a DRAFT release
-# → review the draft on github.com → click Publish
-# → installed copies see the update on next "Check for updates"
+./scripts/release.sh 0.0.2 --notes "what shipped"
+# Builds + signs locally, pushes the tag + bump commit, creates a DRAFT
+# GitHub Release with all artifacts. Open the URL it prints, click Publish.
+# Installed copies see the update on next "Check for updates".
 ```
 
-See [Release process](#release-process) below for what to set up once.
+See [Release process](#release-process) below for the one-time keypair setup.
 
 **Pull-from-git fallback** (still.hobbies-style, used while developing):
 
@@ -187,76 +186,71 @@ in-process libSQL DB in a tmp dir and runs the migrations against it.
 
 Cutting a release publishes a signed `.app.tar.gz` + a `latest.json`
 manifest to a GitHub Release. Installed copies of codo poll that endpoint
-and self-update. The pipeline lives in `.github/workflows/release.yml`
-(committed separately — see [Adding the release workflow](#adding-the-release-workflow)
-if your fresh clone doesn't have it).
+and self-update. The whole pipeline runs locally via `scripts/release.sh`
+— no CI, no GitHub Actions secrets, no `workflow` scope on your gh
+token. (codo is single-operator on a single Mac; CI overhead doesn't pay
+for itself yet.)
 
-### One-time setup
+### One-time keypair setup
 
-1. **Generate a Tauri signing keypair locally.**
+1. **Generate the Tauri signing keypair on this Mac.**
    ```bash
    npx tauri signer generate -w ~/.tauri/codo.key
    ```
-   Use a passphrase. Both the private key and the passphrase need to live
-   in two places: this Mac (so local `tauri build` runs work), and as
-   GitHub Actions secrets.
+   Use a passphrase. Save it. Save the key. Treat both like passwords —
+   if you lose them, you can't sign new updates and have to rotate the
+   public key (which orphans every installed copy).
 
-2. **Embed the public key.** Already done — see `plugins.updater.pubkey`
-   in `src-tauri/tauri.conf.json`. If you ever rotate the keypair, update
+2. **Save the passphrase to disk** so the release script can find it:
+   ```bash
+   echo 'YOUR_PASSPHRASE' > ~/.tauri/codo.key.passphrase
+   chmod 600 ~/.tauri/codo.key.passphrase
+   ```
+   Or `export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=…` in your shell rc —
+   the script picks up either.
+
+3. **Public key already embedded.** See `plugins.updater.pubkey` in
+   `src-tauri/tauri.conf.json`. If you ever rotate the keypair, update
    that field; **all currently-installed codo binaries will refuse the
-   update** (intentional — it's the signature check working).
-
-3. **Set GitHub Actions secrets.** Repo → Settings → Secrets and
-   variables → Actions → New repository secret. Add:
-   - `TAURI_SIGNING_PRIVATE_KEY` — paste the entire contents of
-     `~/.tauri/codo.key` (it's already minisign-formatted with the
-     header line).
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the passphrase.
+   new update** (intentional — it's the signature check working).
 
 ### Cutting a release
 
 ```bash
-# Bump the version number in src-tauri/Cargo.toml AND src-tauri/tauri.conf.json
-# (they must match — the updater compares against tauri.conf.json's "version").
-
-git commit -am "chore: release v0.0.2"
-git tag v0.0.2
-git push origin main v0.0.2
+./scripts/release.sh 0.0.2
+./scripts/release.sh 0.0.2 --notes "Step 3: production-event form lands"
 ```
 
-GitHub Actions kicks off, builds on macOS, signs, and creates a draft
-GitHub Release named `codo v0.0.2`. Open the draft, edit release notes
-(they show in the in-app updater UI under *release notes*), click
-**Publish**. Existing installs pick it up on next *Check for updates*.
+What it does:
 
-If the workflow fails, common causes:
-- Secret name typo (must be exactly `TAURI_SIGNING_PRIVATE_KEY`).
-- Version mismatch between `Cargo.toml` and `tauri.conf.json`.
-- A new permission added to the app needs a matching capability JSON.
+1. Verifies the working tree is clean and the tag isn't already used.
+2. Bumps the version in `src-tauri/Cargo.toml` AND `src-tauri/tauri.conf.json`
+   in lockstep (the updater compares against `tauri.conf.json`'s version
+   field — they MUST match or the auto-update silently no-ops).
+3. Commits the bump, tags it `vX.Y.Z`.
+4. Runs `npm run tauri:build` with the signing env wired. Produces
+   `codo.app`, `codo_X.Y.Z_aarch64.dmg`, `codo_X.Y.Z_aarch64.app.tar.gz`,
+   `codo_X.Y.Z_aarch64.app.tar.gz.sig`.
+5. Generates `latest.json` from those outputs (the manifest the updater
+   plugin fetches).
+6. Pushes the tag + bump commit to `origin`.
+7. Calls `gh release create --draft` with all artifacts attached, prints
+   the URL.
+8. **You open the URL, edit the release notes, click Publish.** Drafts
+   never reach the auto-updater; only published releases do.
 
-### Adding the release workflow
+After publish, existing codo installs see the update on next click of
+**Check for updates** in the Hello-page panel.
 
-GitHub blocks pushes that touch `.github/workflows/` from auth tokens
-that lack the `workflow` scope. To add the file:
+### Common issues
 
-```bash
-# one-time: grant the workflow scope to gh's saved token
-gh auth refresh -s workflow
-
-# then commit + push the workflow file from this repo
-git add .github/workflows/release.yml
-git commit -m "ci(release): tauri-action release workflow"
-git push
-```
-
-The workflow file template is reproduced verbatim below. Save it as
-`.github/workflows/release.yml` if you need to recreate it.
-
-```yaml
-# .github/workflows/release.yml — see commit history for current canonical form
-# (split out from the updater feature commit because GitHub rejects workflow
-# pushes from tokens without the workflow scope).
-```
+- **`gh: command not found`** → `brew install gh && gh auth login`.
+- **Working tree not clean** → commit or stash.
+- **Tag already exists** → bump the patch (e.g. 0.0.2 → 0.0.3).
+- **Build fails to sign** → `~/.tauri/codo.key.passphrase` is wrong, or
+  the env var is set to the wrong value.
+- **`Check for updates` says "no update"** when you expected one →
+  the GitHub Release is still in DRAFT state. Click Publish.
 
 ## Contributor note: always show the solution
 
