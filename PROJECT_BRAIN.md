@@ -112,7 +112,7 @@ This stack was verified by a focused web-research pass against the latest releas
 | **Shell** | **Tauri v2** (≥ 2.6) | Native window. ~5–10 MB binaries. Multi-platform. Real signed auto-updater. |
 | **Backend lang** | **Rust** (current stable) | Runs inside Tauri. Talks to libSQL. Renzo isn't expected to write Rust — just to read it. |
 | **DB client** | **`libsql` Rust crate** | Turso's official client. Mature. Embedded-replica support is first-class. |
-| **Local DB → cloud sync** | **libSQL embedded replica → Turso cloud** | Local SQLite file IS the replica. Auto-syncs to Turso with `db.sync()`. **Caveat:** Turso has marked embedded replicas as "legacy" in favor of "Turso Sync" (still in beta as of May 2026). Plan: ship on embedded replicas now, migrate to Turso Sync on GA. SQL surface is compatible. |
+| **Local DB → cloud sync** | **DIRECT REMOTE for now → Turso embedded replica or Turso Sync later** | ⚠ **Updated 2026-05-08.** The original plan was to ship on libSQL embedded replicas. Reality during Step 2 onboarding: Turso's server fully retired the embedded-replica sync protocol (`'deprecated version of sync'` handshake error against both libsql 0.6 and 0.9). Turso Sync — the replacement — isn't shipping in stable libsql yet. So Step 2 forward, codo uses **direct-remote `Builder::new_remote(url, token)`** for everything. Trade-off: every read/write is ~50–200ms over the internet, and codo cannot work offline. Restoration path: when Turso Sync lands stable in libsql, swap the builder back to `new_remote_replica(path, ...)` + `db.sync()` — SQL surface is compatible. The `dirty` flag column on mutable rows stays in the schema for the eventual restoration. |
 | **Frontend framework** | **SvelteKit 2 + Svelte 5 (runes)**, in **SPA mode** via `@sveltejs/adapter-static` | No SSR (we're inside a webview). Root `+layout.ts` must export `ssr=false`, `prerender=false`. `svelte.config.js` uses `fallback: 'index.html'`. |
 | **Styling** | **Tailwind CSS v4** (via `@tailwindcss/vite`) | **Vite plugin order matters:** SvelteKit plugin first, Tailwind second, or class scanning silently breaks. Use `@reference "tailwindcss";` at the top of any `<style>` block that uses `@apply`. |
 | **UI components** | **shadcn-svelte** (Tailwind v4 + Svelte 5 fully supported) | Copy-paste components, you own the code. Looks like a real app. |
@@ -167,11 +167,29 @@ Enforcement:
 
 ### 4.2  Local-first with cloud mirror
 
-- Local SQLite (libSQL) is the canonical store for the operator. All reads and writes go local first.
+⚠ **Updated 2026-05-08.** This is the *intended* architecture; codo currently
+runs in **direct-remote-only** mode pending Turso Sync GA — see §3 stack
+table for the full reasoning. The bullets below describe both the current
+(temporary) state and the restoration target.
+
+**Currently (direct-remote, while Turso Sync stabilizes):**
+- The Turso DB is the only store. Every read and write is an HTTPS call.
+- If wifi dies, codo cannot record events. Plant-floor entry is blocked.
+- The dashboard read path and the email-funnel agent write path are unchanged
+  (they were always going to talk to remote).
+
+**Target (when Turso Sync lands stable in libsql):**
+- Local SQLite (libSQL) becomes the canonical store for the operator. All reads and writes go local first.
 - `db.sync()` pushes local writes up and pulls remote changes down on a schedule (and on user-triggered "Sync Now").
 - If wifi dies, the operator keeps working. Sync resumes when connectivity returns.
 - The future management dashboard reads the **remote** Turso DB only — never the local file.
 - The future Claude email agent writes to the **remote** Turso DB. The desktop app pulls those rows into a "to review" inbox.
+
+**Schema artifacts that survive the transition:** the `dirty` flag column on
+`production_event` (and any other mutable table) stays in v1 — it's a
+no-op against direct-remote (we just always set it to 1) but becomes
+load-bearing again the moment local-first sync returns. Ledger functions
+are oblivious to the storage backend; same SQL.
 
 ### 4.3  Single canonical event log + per-subsystem auxiliary ledgers
 
@@ -551,19 +569,31 @@ Each step is a separate Claude Code session. Don't bundle.
 
 Output: `docs/schema-extraction.md`. Surveyed the workbook, walked through corrections with Renzo, captured the corrected three-flow model + DVO subsystem.
 
-### Step 2 — Repo scaffold *(next session)*
+### Step 2 — Repo scaffold ✅ **DONE 2026-05-08**
 
-Output: a working Tauri v2 + Rust + SvelteKit + libSQL boot. Doesn't need to do anything functional yet — launches a window with a "Hello" page that successfully connects to a local libSQL file.
+Output: a working Tauri v2 + Rust + SvelteKit + libSQL boot. Window
+launches, onboarding flow lands a real Turso DB, migrations applied,
+Hello page lists the 5 seeded warehouses.
 
-Includes:
-- `src-tauri/` (Rust) with `main.rs`, `db/mod.rs` (connection + migrations runner that applies to remote first), `commands/` (placeholder), `canonicalize.rs` (one fn per categorical), `ledger.rs` (function stubs).
-- `src/` (SvelteKit) with adapter-static config, Tailwind v4 + shadcn-svelte initialized, one route.
-- `migrations/v1.sql` — the schema from §7.
-- `seed.sql` — canonical lookup-table values.
-- `.env.example`, README documenting BYO-Turso setup + keyring credential flow.
-- `tauri.conf.json` configured for SPA mode.
-- `vite.config.ts` with the correct plugin order (SvelteKit first, Tailwind second).
-- `Cargo.toml` and `package.json` with all deps pinned.
+What was actually built (vs the original spec):
+- ✓ `src-tauri/` Rust crate with `main.rs`, `lib.rs`, `db.rs`, `commands.rs`, `canonicalize.rs`, `direction.rs`, `validation.rs`, `ledger.rs` stubs, `turso_platform.rs` (onboarding API), `credentials.rs` (keyring), `error.rs`.
+- ✓ SvelteKit SPA (adapter-static, ssr=false, prerender=false), Tailwind v4 via `@tailwindcss/vite` (plugin order verified — SvelteKit first), one Hello + Onboarding route.
+- ✓ `migrations/v1.sql` — the schema from §7 (lookups, dvo_batch + dvo_receipt, production_event spine with closed CHECK on disposition coherence, warehouse_opening_balance, drift_log, app_settings, schema_version).
+- ✓ `migrations/seed.sql` — canonical lookup values normalized per §7.
+- ✓ `tests/validity_matrix.rs` — 24 integration tests walking every cell of §7.1 + every §7.2 SRC↔PLANT pairing rule, with live-DB inserts of every VALID fixture.
+- ✓ `tauri.conf.json` SPA mode + bundle.createUpdaterArtifacts true.
+- ✓ `vite.config.ts` plugin order correct.
+- ✓ Cargo.toml / package.json deps pinned.
+- ✓ Tauri Platform API onboarding flow per §5 #12 — Renzo pastes a Platform token, codo creates the DB, mints a DB-level token, persists creds to macOS Keychain, discards the Platform token. Group resolution handles the case where new free-tier accounts have zero groups (creates `default` at `sin`).
+- ✓ Auto-updater wired (`tauri-plugin-updater` v2 + minisign keypair signing). Local release script at `scripts/release.sh` builds + signs + drafts a GitHub Release; in-app **Check for updates** UI downloads + verifies + relaunches.
+- ✗ shadcn-svelte not initialized — Hello page is plain Tailwind for now, can layer shadcn in Step 3+ when forms appear.
+- ✗ tauri-specta type bridge punted — using hand-written TS interfaces (Plan B per §5 #9). Will revisit in Step 3 once there are commands worth typing.
+- ✗ Embedded replicas dropped temporarily, see §3 + §4.2.
+
+Bug ledger / friction during Step 2 (worth remembering):
+- Token paste from styled webpages can carry NBSP/ZWSP/BOM that `.trim()` doesn't strip → harden with `chars().filter(!is_whitespace())` and JWT-shape pre-checks.
+- libsql `default-features=false` requires explicit `tls` feature for remote connections, otherwise panics inside a tokio worker (UI hangs forever, no error propagation).
+- Turso server rejected libsql 0.6 AND 0.9 embedded-replica handshake. Direct-remote works fine.
 
 ### Step 3 — First vertical slice
 
